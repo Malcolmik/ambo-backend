@@ -1,0 +1,78 @@
+@baseUrl = http://localhost:4000
+@ADMIN_TOKEN = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ImNtaDlsczg3cTAwMDB2eTdvYmJkcWVremEiLCJyb2xlIjoiU1VQRVJfQURNSU4iLCJlbWFpbCI6ImFkbWluQGV4YW1wbGUuY29tIiwiaWF0IjoxNzYxNzM0NDEyLCJleHAiOjE3NjE4MjA4MTJ9.vS_kYFpguFMDkZqADdjxh9tj2cdAuggoQM4c3xb4MOI
+
+### Login (Admin)
+POST http://localhost:4000/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@example.com",
+  "password": "adminpassword"
+}
+
+### Get Users (after login)
+GET http://localhost:4000/api/users
+Authorization: Bearer {{ADMIN_TOKEN}}
+
+### Create Client
+POST http://localhost:4000/api/clients
+Authorization: Bearer {{ADMIN_TOKEN}}
+Content-Type: application/json
+
+{
+  "companyName": "Tola Events",
+  "contactPerson": "Tola",
+  "email": "tola@events.com",
+  "phone": "08099887766",
+  "status": "ACTIVE"
+}
+
+### List Clients (get clientId)
+GET http://localhost:4000/api/clients
+Authorization: Bearer {{ADMIN_TOKEN}}
+
+
+### Create Task
+POST http://localhost:4000/api/tasks
+Authorization: Bearer {{ADMIN_TOKEN}}
+Content-Type: application/json
+
+{
+  "title": "Launch campaign for Tola Events",
+  "description": "Assign worker to oversee logistics and reporting.",
+  "priority": "HIGH",
+  "dueDate": "2025-10-30T10:00:00.000Z",
+  "clientId": "cmh9nhl2m000dvyc8m27bhg6w",
+  "assignedToId": "cmh9nehc80008vyc8arvemr98",
+  "requiresApproval": true
+}
+
+### Update Task Status
+PATCH http://localhost:4000/api/tasks/cmhbvobzr000dvyzcdjxz500i
+Authorization: Bearer {{ADMIN_TOKEN}}
+Content-Type: application/json
+
+{
+  "status": "IN_PROGRESS"
+}
+
+
+### Get Tasks
+GET http://localhost:4000/api/tasks
+Authorization: Bearer {{ADMIN_TOKEN}}
+
+### Get My Tasks (as Worker)
+GET http://localhost:4000/api/tasks
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ImNtaDluZWhjODAwMDh2eWM4YXJ2ZW1yOTgiLCJyb2xlIjoiV09SS0VSIiwiZW1haWwiOiJqb2huQGRlbW8uY29tIiwiaWF0IjoxNzYxNzM1MDY2LCJleHAiOjE3NjE4MjE0NjZ9.gditu6YuTqmNevTGvUdoIRD9igBEp8KVfCBUyLIrNmw
+
+
+### Login as Worker
+POST http://localhost:4000/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "john@demo.com",
+  "password": "workerpass"
+}
+
+

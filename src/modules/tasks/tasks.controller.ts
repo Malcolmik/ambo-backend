@@ -1,0 +1,338 @@
+import { Response } from "express";
+import { prisma } from "../../config/prisma";
+import { AuthedRequest } from "../../middleware/auth";
+import { success, fail } from "../../utils/response";
+
+/**
+ * GET /tasks
+ * Role behavior:
+ *  - SUPER_ADMIN: all tasks
+ *  - WORKER: tasks assigned to me
+ *  - CLIENT_VIEWER: tasks for my company
+ */
+export async function listTasks(req: AuthedRequest, res: Response) {
+  const role = req.user?.role;
+  const userId = req.user?.id;
+
+  if (!role || !userId) return fail(res, "Unauthorized", 401);
+
+  if (role === "SUPER_ADMIN") {
+    const all = await prisma.task.findMany({
+      include: {
+        client: true,
+        assignedTo: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    return success(res, all);
+  }
+
+  if (role === "WORKER") {
+    const mine = await prisma.task.findMany({
+      where: { assignedToId: userId },
+      include: {
+        client: true,
+        assignedTo: { select: { id: true, name: true } },
+      },
+      orderBy: { dueDate: "asc" },
+    });
+    return success(res, mine);
+  }
+
+  if (role === "CLIENT_VIEWER") {
+    const client = await prisma.client.findFirst({
+      where: { linkedUserId: userId },
+    });
+    if (!client) return fail(res, "No client", 404);
+
+    const theirs = await prisma.task.findMany({
+      where: { clientId: client.id },
+      include: {
+        client: true,
+        assignedTo: { select: { id: true, name: true } },
+      },
+      orderBy: { dueDate: "asc" },
+    });
+    return success(res, theirs);
+  }
+
+  return fail(res, "Forbidden", 403);
+}
+
+/**
+ * GET /tasks/:id
+ * Role-aware single fetch
+ */
+export async function getTask(req: AuthedRequest, res: Response) {
+  const { id } = req.params;
+  const role = req.user?.role;
+  const userId = req.user?.id;
+
+  const task = await prisma.task.findUnique({
+    where: { id },
+    include: {
+      client: true,
+      assignedTo: { select: { id: true, name: true } },
+      comments: {
+        include: {
+          user: { select: { id: true, name: true, role: true } },
+        },
+        orderBy: { createdAt: "asc" },
+      },
+      updates: {
+        include: {
+          user: { select: { id: true, name: true, role: true } },
+        },
+        orderBy: { timestamp: "asc" },
+      },
+    },
+  });
+
+  if (!task) return fail(res, "Task not found", 404);
+
+  if (role === "SUPER_ADMIN") return success(res, task);
+
+  if (role === "WORKER") {
+    if (task.assignedToId === userId) return success(res, task);
+    return fail(res, "Forbidden", 403);
+  }
+
+  if (role === "CLIENT_VIEWER") {
+    const client = await prisma.client.findFirst({
+      where: { linkedUserId: userId },
+    });
+    if (client && task.clientId === client.id) return success(res, task);
+    return fail(res, "Forbidden", 403);
+  }
+
+  return fail(res, "Forbidden", 403);
+}
+
+/**
+ * POST /tasks
+ * SUPER_ADMIN creates a task, assigns worker & client
+ */
+export async function createTask(req: AuthedRequest, res: Response) {
+  try {
+    const {
+      title,
+      description,
+      priority,
+      dueDate,
+      clientId,
+      assignedToId,
+      requiresApproval,
+    } = req.body;
+
+    // validate clientId if provided
+    if (clientId) {
+      const clientExists = await prisma.client.findUnique({
+        where: { id: clientId },
+        select: { id: true },
+      });
+      if (!clientExists) {
+        return fail(res, "Invalid clientId: client does not exist", 400);
+      }
+    }
+
+    // validate assignedToId if provided
+    if (assignedToId) {
+      const workerExists = await prisma.user.findUnique({
+        where: { id: assignedToId },
+        select: { id: true, role: true },
+      });
+      if (!workerExists || workerExists.role !== "WORKER") {
+        return fail(res, "Invalid assignedToId: worker not found", 400);
+      }
+    }
+
+    // create task
+    const created = await prisma.task.create({
+      data: {
+        title,
+        description,
+        priority,
+        dueDate: dueDate ? new Date(dueDate) : null,
+        clientId: clientId || null,
+        assignedToId: assignedToId || null,
+        requiresApproval: !!requiresApproval,
+        createdById: req.user!.id,
+      },
+    });
+
+    // audit log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user!.id,
+        actionType: "TASK_CREATED",
+        entityType: "TASK",
+        entityId: created.id,
+        metaJson: created as any,
+      },
+    });
+
+    return success(res, created, 201);
+  } catch (err) {
+    console.error("createTask error:", err);
+    return fail(res, "Task creation failed", 500);
+  }
+}
+/**
+ * PATCH /tasks/:id
+ * General update to fields on a task.
+ * - SUPER_ADMIN can update anything
+ * - WORKER can only update tasks assigned to them
+ *
+ * Supports updating:
+ *   status, title, description, priority, dueDate, assignedToId
+ *
+ * Also logs status changes into taskUpdate + auditLog.
+ */
+export async function updateTask(req: AuthedRequest, res: Response) {
+  try {
+    const { id } = req.params;
+    const {
+      status,
+      title,
+      description,
+      priority,
+      dueDate,
+      assignedToId,
+    } = req.body;
+
+    // 1. Load current task
+    const task = await prisma.task.findUnique({
+      where: { id },
+    });
+    if (!task) {
+      return fail(res, "Task not found", 404);
+    }
+
+    // 2. Permission check
+    const isAdmin = req.user?.role === "SUPER_ADMIN";
+    const isAssignedWorker = req.user?.id === task.assignedToId;
+
+    if (!isAdmin && !isAssignedWorker) {
+      return fail(res, "Forbidden", 403);
+    }
+
+    // 3. Validate reassignment if changing assignedToId
+    let nextAssignedToId = task.assignedToId;
+    if (assignedToId && assignedToId !== task.assignedToId) {
+      // only SUPER_ADMIN can reassign
+      if (!isAdmin) {
+        return fail(res, "Only SUPER_ADMIN can reassign tasks", 403);
+      }
+
+      const workerExists = await prisma.user.findUnique({
+        where: { id: assignedToId },
+        select: { id: true, role: true },
+      });
+
+      if (!workerExists || workerExists.role !== "WORKER") {
+        return fail(res, "Invalid assignedToId: worker not found", 400);
+      }
+
+      nextAssignedToId = assignedToId;
+    }
+
+    // 4. Build update payload safely
+    const updated = await prisma.task.update({
+      where: { id },
+      data: {
+        status: status ?? task.status,
+        title: title ?? task.title,
+        description: description ?? task.description,
+        priority: priority ?? task.priority,
+        dueDate: dueDate ? new Date(dueDate) : task.dueDate,
+        assignedToId: nextAssignedToId,
+      },
+    });
+
+    // 5. If status changed, log taskUpdate + auditLog
+    if (status && status !== task.status) {
+      await prisma.taskUpdate.create({
+        data: {
+          taskId: id,
+          userId: req.user!.id,
+          oldStatus: task.status,
+          newStatus: status,
+          message: "Status updated via updateTask",
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          actionType: "TASK_STATUS_CHANGE",
+          entityType: "TASK",
+          entityId: id,
+          metaJson: {
+            oldStatus: task.status,
+            newStatus: status,
+          } as any,
+        },
+      });
+    }
+
+    return success(res, updated);
+  } catch (err) {
+    console.error("updateTask error:", err);
+    return fail(res, "Task update failed", 500);
+  }
+}
+
+/**
+ * PATCH /tasks/:id/status
+ * Quick status/progress update with message/attachment.
+ * This is basically your "progress log" endpoint.
+ */
+export async function updateTaskStatus(req: AuthedRequest, res: Response) {
+  const { id } = req.params;
+  const { newStatus, message, attachmentUrl } = req.body;
+
+  const task = await prisma.task.findUnique({ where: { id } });
+  if (!task) return fail(res, "Task not found", 404);
+
+  // only SUPER_ADMIN or assigned worker can push status
+  if (
+    req.user?.role !== "SUPER_ADMIN" &&
+    req.user?.id !== task.assignedToId
+  ) {
+    return fail(res, "Forbidden", 403);
+  }
+
+  const updatedTask = await prisma.task.update({
+    where: { id },
+    data: {
+      status: newStatus ?? task.status,
+    },
+  });
+
+  await prisma.taskUpdate.create({
+    data: {
+      taskId: id,
+      userId: req.user!.id,
+      oldStatus: task.status,
+      newStatus: newStatus ?? task.status,
+      message,
+      attachmentUrl,
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      userId: req.user!.id,
+      actionType: "TASK_STATUS_CHANGE",
+      entityType: "TASK",
+      entityId: id,
+      metaJson: {
+        oldStatus: task.status,
+        newStatus: newStatus ?? task.status,
+        message,
+      } as any,
+    },
+  });
+
+  return success(res, updatedTask);
+}

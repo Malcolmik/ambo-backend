@@ -1,0 +1,222 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  WORKER
+  CLIENT_VIEWER
+}
+
+enum ClientStatus {
+  LEAD
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum TaskStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  WAITING
+  DONE
+  REJECTED
+}
+
+enum ClientApprovalStatus {
+  PENDING
+  APPROVED
+  REVISION_REQUESTED
+}
+
+model User {
+  id            String        @id @default(cuid())
+  name          String
+  email         String        @unique
+  phone         String?
+  passwordHash  String
+  role          Role
+  active        Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  clients       Client[]      @relation("ClientLinkedUser")
+  tasksAssigned Task[]        @relation("TaskAssignedTo")
+  tasksCreated  Task[]        @relation("TaskCreatedBy")
+  comments      TaskComment[]
+  updates       TaskUpdate[]
+  auditLogs     AuditLog[]
+}
+
+model Client {
+  id             String        @id @default(cuid())
+  companyName    String
+  contactPerson  String
+  email          String
+  phone          String
+  whatsapp       String?
+  logoUrl        String?
+  status         ClientStatus  @default(LEAD)
+  notes          String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  linkedUserId   String?
+  linkedUser     User?         @relation("ClientLinkedUser", fields: [linkedUserId], references: [id])
+
+  tasks          Task[]
+}
+
+model Task {
+  id                     String                @id @default(cuid())
+  title                  String
+  description            String
+  priority               TaskPriority          @default(MEDIUM)
+  status                 TaskStatus            @default(NOT_STARTED)
+  clientApprovalStatus   ClientApprovalStatus  @default(PENDING)
+  dueDate                DateTime?
+  requiresApproval       Boolean               @default(false)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  clientId     String?
+  client       Client?        @relation(fields: [clientId], references: [id])
+
+  assignedToId String?
+  assignedTo   User?          @relation("TaskAssignedTo", fields: [assignedToId], references: [id])
+
+  createdById  String
+  createdBy    User           @relation("TaskCreatedBy", fields: [createdById], references: [id])
+
+  comments     TaskComment[]
+  updates      TaskUpdate[]
+}
+
+model TaskComment {
+  id               String    @id @default(cuid())
+  content          String
+  isClientComment  Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+
+  taskId           String
+  task             Task      @relation(fields: [taskId], references: [id])
+
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
+}
+
+model TaskUpdate {
+  id            String      @id @default(cuid())
+  oldStatus     TaskStatus?
+  newStatus     TaskStatus?
+  message       String?
+  attachmentUrl String?
+  timestamp     DateTime    @default(now())
+
+  taskId        String
+  task          Task        @relation(fields: [taskId], references: [id])
+
+  userId        String
+  user          User        @relation(fields: [userId], references: [id])
+}
+
+model AuditLog {
+  id          String    @id @default(cuid())
+  actionType  String
+  entityType  String
+  entityId    String
+  metaJson    Json?
+  timestamp   DateTime  @default(now())
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+}
+
+
+// New Addtions and updates for the paystack and client Addtions
+
+
+enum Role { SUPER_ADMIN WORKER CLIENT_VIEWER CLIENT_VIEWER_PENDING }
+
+enum PaymentStatus { INITIATED PENDING PAID FAILED CANCELLED }
+
+enum ContractStatus { AWAITING_QUESTIONNAIRE ACTIVE ON_HOLD COMPLETE }
+
+enum PaymentProvider { PAYSTACK }
+
+model Contract {
+  id            String       @id @default(cuid())
+  clientId      String
+  client        Client       @relation(fields: [clientId], references: [id])
+
+  packageType   String       // CLASSIC | DELUXE | PREMIUM | CUSTOM
+  services      Json         // array of line items if custom
+  totalPrice    Float
+  currency      String       @default("NGN")
+
+  paymentStatus PaymentStatus @default(PENDING)
+  status        ContractStatus @default(AWAITING_QUESTIONNAIRE)
+
+  paymentRef    String?      @unique
+  questionnaire Questionnaire?
+
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  payments      Payment[]
+}
+
+model Questionnaire {
+  id          String   @id @default(cuid())
+  contractId  String   @unique
+  contract    Contract @relation(fields: [contractId], references: [id])
+  responses   Json
+  createdAt   DateTime @default(now())
+}
+
+model Payment {
+  id           String          @id @default(cuid())
+  provider     PaymentProvider
+  reference    String          @unique
+  amount       Int             // kobo; e.g., NGN 25,000.00 => 2,500,000
+  currency     String          @default("NGN")
+  status       PaymentStatus
+  channel      String?         // card, bank, etc.
+  paidAt       DateTime?
+  customerEmail String?
+  meta         Json?
+  rawPayload   Json?           // full provider response for audits
+
+  // who/what this payment was for
+  userId       String?
+  user         User?           @relation(fields: [userId], references: [id])
+
+  contractId   String?
+  contract     Contract?       @relation(fields: [contractId], references: [id])
+
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  type      String   // PAYMENT_CONFIRMED, QUESTIONNAIRE_SUBMITTED, etc.
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+}
