@@ -1,5 +1,7 @@
+import crypto from "crypto";
 import axios from "axios";
 import { Request, Response } from "express";
+import { prisma } from "../../config/prisma";
 import { AuthedRequest } from "../../middleware/auth";
 import { success, fail } from "../../utils/response";
 
@@ -10,32 +12,49 @@ if (!PAYSTACK_SECRET_KEY) {
   console.warn("[PAYSTACK] PAYSTACK_SECRET_KEY is not set in .env");
 }
 
-// helper
-function nairaToKobo(ngn: number) {
+// Helper: Convert Naira to Kobo
+function nairaToKobo(ngn: number): number {
   return Math.round(ngn * 100);
 }
 
-// POST /api/payments/initiate
+/**
+ * POST /api/payments/initiate
+ * Initializes payment with Paystack and creates Contract + Payment records
+ */
 export async function initiatePayment(req: AuthedRequest, res: Response) {
   try {
     if (!req.user) return fail(res, "Unauthorized", 401);
 
-    // --- DEBUGGING: Log incoming request body ---
-    console.log("initiatePayment body:", req.body);
-    // -------------------------------------------
+    const { 
+      clientId,
+      packageType, 
+      services = [], 
+      totalPrice, 
+      currency = "NGN" 
+    } = req.body;
 
-    const { packageType, services = [], totalPrice, currency = "NGN" } = req.body;
-
-    // Normalise totalPrice to a number for robust validation and calculation
+    // Validate inputs
     const amountNumber = Number(totalPrice);
-
-    // Validation: Check if it's a valid number and greater than zero
     if (!amountNumber || isNaN(amountNumber) || amountNumber <= 0) {
       return fail(res, "Invalid totalPrice", 400);
     }
 
+    if (!clientId) {
+      return fail(res, "clientId is required", 400);
+    }
+
+    // Verify client exists
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+    });
+
+    if (!client) {
+      return fail(res, "Client not found", 404);
+    }
+
     const amountKobo = nairaToKobo(amountNumber);
 
+    // Call Paystack Initialize API
     const resp = await axios.post(
       `${PAYSTACK_BASE_URL}/transaction/initialize`,
       {
@@ -44,9 +63,9 @@ export async function initiatePayment(req: AuthedRequest, res: Response) {
         currency,
         metadata: {
           userId: req.user.id,
+          clientId,
           packageType,
-          services,
-          // Use the validated number here
+          services: JSON.stringify(services),
           totalPrice: amountNumber,
         },
       },
@@ -64,9 +83,59 @@ export async function initiatePayment(req: AuthedRequest, res: Response) {
       return fail(res, "Failed to initialize payment", 502);
     }
 
+    const reference = data.data.reference;
+
+    // Create Contract record
+    const contract = await prisma.contract.create({
+      data: {
+        clientId,
+        packageType,
+        services,
+        totalPrice: amountNumber,
+        currency,
+        paymentStatus: "PENDING",
+        status: "AWAITING_PAYMENT",
+        paymentRef: reference,
+      },
+    });
+
+    // Create Payment record
+    await prisma.payment.create({
+      data: {
+        provider: "PAYSTACK",
+        reference,
+        amount: amountKobo,
+        currency,
+        status: "PENDING",
+        customerEmail: req.user.email,
+        userId: req.user.id,
+        contractId: contract.id,
+        meta: {
+          packageType,
+          services,
+        },
+      },
+    });
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        actionType: "PAYMENT_INITIATED",
+        entityType: "CONTRACT",
+        entityId: contract.id,
+        metaJson: {
+          reference,
+          amount: amountNumber,
+          packageType,
+        },
+      },
+    });
+
     return success(res, {
       authorization_url: data.data.authorization_url,
-      reference: data.data.reference,
+      reference: reference,
+      contractId: contract.id,
     });
   } catch (err: any) {
     console.error("initiatePayment error:", err.response?.data || err.message);
@@ -74,13 +143,204 @@ export async function initiatePayment(req: AuthedRequest, res: Response) {
   }
 }
 
-// POST /api/payments/verify  (simple stub for now)
+/**
+ * POST /api/payments/verify
+ * Manually verify a payment reference
+ */
 export async function verifyPayment(req: AuthedRequest, res: Response) {
-  return fail(res, "Not implemented yet", 501);
+  try {
+    const { reference } = req.body;
+
+    if (!reference) {
+      return fail(res, "Reference is required", 400);
+    }
+
+    // Call Paystack Verify API
+    const resp = await axios.get(
+      `${PAYSTACK_BASE_URL}/transaction/verify/${reference}`,
+      {
+        headers: {
+          Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+        },
+      }
+    );
+
+    const data = resp.data;
+    if (!data.status) {
+      return fail(res, "Verification failed", 502);
+    }
+
+    const txData = data.data;
+
+    // Find payment record
+    const payment = await prisma.payment.findUnique({
+      where: { reference },
+      include: { contract: true },
+    });
+
+    if (!payment) {
+      return fail(res, "Payment record not found", 404);
+    }
+
+    // Update payment status
+    await prisma.payment.update({
+      where: { reference },
+      data: {
+        status: txData.status === "success" ? "PAID" : "FAILED",
+        paidAt: txData.paid_at ? new Date(txData.paid_at) : null,
+        channel: txData.channel,
+        rawPayload: txData,
+      },
+    });
+
+    return success(res, {
+      status: txData.status,
+      amount: txData.amount / 100, // Convert back to Naira
+      paidAt: txData.paid_at,
+      reference: txData.reference,
+    });
+  } catch (err: any) {
+    console.error("verifyPayment error:", err.response?.data || err.message);
+    return fail(res, "Payment verification failed", 500);
+  }
 }
 
-// POST /api/payments/webhook  (simple stub so app.ts compiles)
+/**
+ * POST /api/payments/webhook
+ * Paystack webhook handler for payment events
+ */
 export async function paystackWebhook(req: Request, res: Response) {
-  console.log("Paystack webhook hit");
-  return res.status(200).send("ok");
+  try {
+    // 1. Verify signature
+    const hash = crypto
+      .createHmac("sha512", PAYSTACK_SECRET_KEY)
+      .update(JSON.stringify(req.body))
+      .digest("hex");
+
+    const signature = req.headers["x-paystack-signature"];
+
+    if (hash !== signature) {
+      console.error("Invalid webhook signature");
+      return res.status(401).send("Invalid signature");
+    }
+
+    // 2. Parse event
+    const event = req.body;
+    console.log("Paystack webhook event:", event.event);
+
+    // 3. Handle charge.success event
+    if (event.event === "charge.success") {
+      const data = event.data;
+      const reference = data.reference;
+
+      // Find payment record
+      const payment = await prisma.payment.findUnique({
+        where: { reference },
+        include: { 
+          contract: { 
+            include: { client: { include: { linkedUser: true } } } 
+          },
+          user: true,
+        },
+      });
+
+      if (!payment) {
+        console.error(`Payment not found for reference: ${reference}`);
+        return res.status(404).send("Payment not found");
+      }
+
+      // Check if already processed
+      if (payment.status === "PAID") {
+        console.log(`Payment ${reference} already processed`);
+        return res.status(200).send("Already processed");
+      }
+
+      // Begin transaction
+      await prisma.$transaction(async (tx) => {
+        // 1. Update Payment to PAID
+        await tx.payment.update({
+          where: { reference },
+          data: {
+            status: "PAID",
+            paidAt: new Date(data.paid_at),
+            channel: data.channel,
+            rawPayload: data,
+          },
+        });
+
+        // 2. Update Contract status
+        if (payment.contract) {
+          await tx.contract.update({
+            where: { id: payment.contract.id },
+            data: {
+              paymentStatus: "PAID",
+              status: "AWAITING_QUESTIONNAIRE",
+            },
+          });
+        }
+
+        // 3. Promote user role from CLIENT_VIEWER_PENDING to CLIENT_VIEWER
+        if (payment.user && payment.user.role === "CLIENT_VIEWER_PENDING") {
+          await tx.user.update({
+            where: { id: payment.user.id },
+            data: { role: "CLIENT_VIEWER" },
+          });
+        }
+
+        // 4. Create notification for SUPER_ADMIN
+        const superAdmins = await tx.user.findMany({
+          where: { role: "SUPER_ADMIN", active: true },
+          select: { id: true },
+        });
+
+        for (const admin of superAdmins) {
+          await tx.notification.create({
+            data: {
+              userId: admin.id,
+              type: "PAYMENT_CONFIRMED",
+              title: "New Payment Received",
+              body: `Payment of ${data.amount / 100} ${data.currency} received from ${
+                payment.contract?.client.companyName || "Unknown"
+              }. Contract ID: ${payment.contract?.id}`,
+            },
+          });
+        }
+
+        // 5. Create notification for client user
+        if (payment.user) {
+          await tx.notification.create({
+            data: {
+              userId: payment.user.id,
+              type: "PAYMENT_CONFIRMED",
+              title: "Payment Successful",
+              body: `Your payment of ${data.amount / 100} ${data.currency} has been confirmed. Please complete the project questionnaire.`,
+            },
+          });
+        }
+
+        // 6. Audit log
+        await tx.auditLog.create({
+          data: {
+            userId: payment.userId || payment.contract!.client.linkedUserId || "system",
+            actionType: "PAYMENT_SUCCESS",
+            entityType: "PAYMENT",
+            entityId: payment.id,
+            metaJson: {
+              reference,
+              amount: data.amount / 100,
+              channel: data.channel,
+              contractId: payment.contract?.id,
+            },
+          },
+        });
+      });
+
+      console.log(`✅ Payment ${reference} processed successfully`);
+    }
+
+    return res.status(200).send("Webhook received");
+  } catch (err: any) {
+    console.error("Webhook processing error:", err);
+    return res.status(500).send("Webhook processing failed");
+  }
 }

@@ -11,6 +11,7 @@ enum Role {
   SUPER_ADMIN
   WORKER
   CLIENT_VIEWER
+  CLIENT_VIEWER_PENDING
 }
 
 enum ClientStatus {
@@ -41,6 +42,28 @@ enum ClientApprovalStatus {
   REVISION_REQUESTED
 }
 
+enum PaymentStatus {
+  INITIATED
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum ContractStatus {
+  AWAITING_PAYMENT
+  AWAITING_QUESTIONNAIRE
+  READY_FOR_ASSIGNMENT
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETE
+  CANCELLED
+}
+
+enum PaymentProvider {
+  PAYSTACK
+}
+
 model User {
   id            String        @id @default(cuid())
   name          String
@@ -52,12 +75,15 @@ model User {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
-  clients       Client[]      @relation("ClientLinkedUser")
-  tasksAssigned Task[]        @relation("TaskAssignedTo")
-  tasksCreated  Task[]        @relation("TaskCreatedBy")
+  // Relations
+  clients       Client[]       @relation("ClientLinkedUser")
+  tasksAssigned Task[]         @relation("TaskAssignedTo")
+  tasksCreated  Task[]         @relation("TaskCreatedBy")
   comments      TaskComment[]
   updates       TaskUpdate[]
   auditLogs     AuditLog[]
+  payments      Payment[]
+  notifications Notification[]
 }
 
 model Client {
@@ -76,7 +102,80 @@ model Client {
   linkedUserId   String?
   linkedUser     User?         @relation("ClientLinkedUser", fields: [linkedUserId], references: [id])
 
+  // Relations
   tasks          Task[]
+  contracts      Contract[]
+}
+
+model Contract {
+  id            String          @id @default(cuid())
+  clientId      String
+  client        Client          @relation(fields: [clientId], references: [id])
+
+  packageType   String          // "CLASSIC" | "DELUXE" | "PREMIUM" | "CUSTOM"
+  services      Json            // array of service line items if custom
+  totalPrice    Float
+  currency      String          @default("NGN")
+
+  paymentStatus PaymentStatus   @default(PENDING)
+  status        ContractStatus  @default(AWAITING_PAYMENT)
+
+  paymentRef    String?         @unique
+  
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  // Relations
+  payments      Payment[]
+  questionnaire Questionnaire?
+}
+
+model Questionnaire {
+  id          String   @id @default(cuid())
+  contractId  String   @unique
+  contract    Contract @relation(fields: [contractId], references: [id])
+  responses   Json     // JSON object with all questionnaire answers
+  createdAt   DateTime @default(now())
+}
+
+model Payment {
+  id            String          @id @default(cuid())
+  provider      PaymentProvider
+  reference     String          @unique
+  amount        Int             // Amount in kobo (e.g., NGN 25,000.00 = 2,500,000 kobo)
+  currency      String          @default("NGN")
+  status        PaymentStatus
+  channel       String?         // card, bank, ussd, etc.
+  paidAt        DateTime?
+  customerEmail String?
+  meta          Json?           // Additional metadata
+  rawPayload    Json?           // Full provider response for audits
+
+  // Relations
+  userId        String?
+  user          User?           @relation(fields: [userId], references: [id])
+
+  contractId    String?
+  contract      Contract?       @relation(fields: [contractId], references: [id])
+
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([reference])
+  @@index([status])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  type      String    // PAYMENT_CONFIRMED, QUESTIONNAIRE_SUBMITTED, TASK_ASSIGNED, etc.
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
 }
 
 model Task {
@@ -100,6 +199,7 @@ model Task {
   createdById  String
   createdBy    User           @relation("TaskCreatedBy", fields: [createdById], references: [id])
 
+  // Relations
   comments     TaskComment[]
   updates      TaskUpdate[]
 }
@@ -134,89 +234,15 @@ model TaskUpdate {
 
 model AuditLog {
   id          String    @id @default(cuid())
-  actionType  String
-  entityType  String
+  actionType  String    // TASK_CREATED, PAYMENT_SUCCESS, CONTRACT_UPDATED, etc.
+  entityType  String    // TASK, CONTRACT, PAYMENT, etc.
   entityId    String
   metaJson    Json?
   timestamp   DateTime  @default(now())
 
   userId      String
   user        User      @relation(fields: [userId], references: [id])
-}
 
-
-// New Addtions and updates for the paystack and client Addtions
-
-
-enum Role { SUPER_ADMIN WORKER CLIENT_VIEWER CLIENT_VIEWER_PENDING }
-
-enum PaymentStatus { INITIATED PENDING PAID FAILED CANCELLED }
-
-enum ContractStatus { AWAITING_QUESTIONNAIRE ACTIVE ON_HOLD COMPLETE }
-
-enum PaymentProvider { PAYSTACK }
-
-model Contract {
-  id            String       @id @default(cuid())
-  clientId      String
-  client        Client       @relation(fields: [clientId], references: [id])
-
-  packageType   String       // CLASSIC | DELUXE | PREMIUM | CUSTOM
-  services      Json         // array of line items if custom
-  totalPrice    Float
-  currency      String       @default("NGN")
-
-  paymentStatus PaymentStatus @default(PENDING)
-  status        ContractStatus @default(AWAITING_QUESTIONNAIRE)
-
-  paymentRef    String?      @unique
-  questionnaire Questionnaire?
-
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-
-  payments      Payment[]
-}
-
-model Questionnaire {
-  id          String   @id @default(cuid())
-  contractId  String   @unique
-  contract    Contract @relation(fields: [contractId], references: [id])
-  responses   Json
-  createdAt   DateTime @default(now())
-}
-
-model Payment {
-  id           String          @id @default(cuid())
-  provider     PaymentProvider
-  reference    String          @unique
-  amount       Int             // kobo; e.g., NGN 25,000.00 => 2,500,000
-  currency     String          @default("NGN")
-  status       PaymentStatus
-  channel      String?         // card, bank, etc.
-  paidAt       DateTime?
-  customerEmail String?
-  meta         Json?
-  rawPayload   Json?           // full provider response for audits
-
-  // who/what this payment was for
-  userId       String?
-  user         User?           @relation(fields: [userId], references: [id])
-
-  contractId   String?
-  contract     Contract?       @relation(fields: [contractId], references: [id])
-
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-}
-
-model Notification {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  type      String   // PAYMENT_CONFIRMED, QUESTIONNAIRE_SUBMITTED, etc.
-  title     String
-  body      String
-  readAt    DateTime?
-  createdAt DateTime @default(now())
+  @@index([entityType, entityId])
+  @@index([userId])
 }
