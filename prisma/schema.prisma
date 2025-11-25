@@ -108,26 +108,30 @@ model Client {
 }
 
 model Contract {
-  id            String          @id @default(cuid())
-  clientId      String
-  client        Client          @relation(fields: [clientId], references: [id])
+  id             String          @id @default(cuid())
+  clientId       String
+  client         Client          @relation(fields: [clientId], references: [id])
 
-  packageType   String          // "CLASSIC" | "DELUXE" | "PREMIUM" | "CUSTOM"
-  services      Json            // array of service line items if custom
-  totalPrice    Float
-  currency      String          @default("NGN")
+  packageType    String          // "CLASSIC" | "DELUXE" | "PREMIUM" | "CUSTOM"
+  services       Json            // array of service line items if custom
+  totalPrice     Float
+  currency       String          @default("NGN")
 
-  paymentStatus PaymentStatus   @default(PENDING)
-  status        ContractStatus  @default(AWAITING_PAYMENT)
+  paymentStatus  PaymentStatus   @default(PENDING)
+  status         ContractStatus  @default(AWAITING_PAYMENT)
 
-  paymentRef    String?         @unique
+  paymentRef     String?         @unique
+  chatChannelUrl String?         @db.VarChar(191)
+
   
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-
   // Relations
-  payments      Payment[]
-  questionnaire Questionnaire?
+  payments       Payment[]
+  questionnaire  Questionnaire?    
+
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  
 }
 
 model Questionnaire {

@@ -7,6 +7,7 @@ export interface AuthedRequest extends Request {
     id: string;
     role: string;
     email: string;
+    name: string;
   };
 }
 
@@ -24,6 +25,7 @@ export function authRequired(req: AuthedRequest, res: Response, next: NextFuncti
       id: decoded.id,
       role: decoded.role,
       email: decoded.email,
+      name: decoded.name,
     };
     next();
   } catch (err) {

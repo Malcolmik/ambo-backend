@@ -7,31 +7,41 @@ import { success, fail } from "../../utils/response";
 
 // POST /auth/login
 export async function login(req: Request, res: Response) {
-  const { email, password } = req.body;
+  try {
+    const { email, password } = req.body;
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-  });
+    // 1. Add validation for email and password presence
+    if (!email || !password) {
+      return fail(res, "Email and password are required", 400);
+    }
 
-  if (!user || !user.active) {
-    return fail(res, "Invalid credentials", 401);
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user || !user.active) {
+      return fail(res, "Invalid credentials", 401);
+    }
+
+    const ok = await comparePassword(password, user.passwordHash);
+    if (!ok) {
+      return fail(res, "Invalid credentials", 401);
+    }
+
+    const token = jwt.sign(
+      { id: user.id, role: user.role, email: user.email },
+      env.jwtSecret,
+      { expiresIn: "1d" }
+    );
+
+    return success(res, {
+      token,
+      user: { id: user.id, role: user.role, email: user.email, name: user.name },
+    });
+  } catch (err) {
+    console.error("login error:", err);
+    return fail(res, "Login failed", 500);
   }
-
-  const ok = await comparePassword(password, user.passwordHash);
-  if (!ok) {
-    return fail(res, "Invalid credentials", 401);
-  }
-
-  const token = jwt.sign(
-    { id: user.id, role: user.role, email: user.email },
-    env.jwtSecret,
-    { expiresIn: "1d" }
-  );
-
-  return success(res, {
-    token,
-    user: { id: user.id, role: user.role, email: user.email, name: user.name },
-  });
 }
 
 // POST /auth/register-worker (SUPER_ADMIN only)

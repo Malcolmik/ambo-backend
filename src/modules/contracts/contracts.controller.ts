@@ -2,6 +2,11 @@ import { Response } from "express";
 import { prisma } from "../../config/prisma";
 import { AuthedRequest } from "../../middleware/auth";
 import { success, fail } from "../../utils/response";
+import {
+  ensureSendbirdUser,
+  ensureContractChannel,
+  issueSendbirdSessionToken,
+} from "../../services/sendbird.service";
 
 /**
  * GET /api/contracts/my
@@ -208,5 +213,191 @@ export async function updateContractStatus(req: AuthedRequest, res: Response) {
   } catch (err: any) {
     console.error("updateContractStatus error:", err);
     return fail(res, "Failed to update contract status", 500);
+  }
+}
+
+// GET /api/contracts/:id/chat
+/**
+ * Retrieves necessary information (Sendbird App ID, User ID, Session Token, Channel URL)
+ * for the authenticated user to join the chat channel associated with a contract.
+ * Ensures the user and the channel exist in Sendbird, and authorizes access based on user role.
+ */
+export async function getContractChatInfo(req: AuthedRequest, res: Response) {
+  try {
+    const { id } = req.params;
+    const user = req.user;
+    if (!user) return fail(res, "Unauthorized", 401);
+
+    const contract = await prisma.contract.findUnique({
+      where: { id },
+      include: {
+        client: {
+          include: {
+            linkedUser: true, // assuming this relation exists: Client.linkedUserId -> User
+          },
+        },
+      },
+    });
+
+    if (!contract) return fail(res, "Contract not found", 404);
+
+    const role = user.role;
+
+    // 🔐 Authorisation:
+    // SUPER_ADMIN: always allowed
+    if (role === "CLIENT_VIEWER") {
+      // Must be the linked user for this client
+      const client = contract.client;
+      if (!client?.linkedUser || client.linkedUser.id !== user.id) {
+        return fail(res, "Forbidden", 403);
+      }
+    }
+
+    if (role === "WORKER") {
+      // Must have at least one task for this client
+      const hasTask = await prisma.task.findFirst({
+        where: {
+          clientId: contract.clientId,
+          assignedToId: user.id,
+        },
+      });
+      if (!hasTask) {
+        return fail(res, "Forbidden", 403);
+      }
+    }
+
+    // At this point: SUPER_ADMIN OR allowed worker OR allowed client
+
+    // Ensure current user exists in Sendbird
+    await ensureSendbirdUser({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+    });
+
+    // Determine channel members: client user + all workers assigned at this client
+    const members: string[] = [];
+
+    // client
+    const clientUser = contract.client?.linkedUser;
+    if (clientUser) {
+      await ensureSendbirdUser({
+        id: clientUser.id,
+        name: clientUser.name,
+        email: clientUser.email,
+      });
+      members.push(clientUser.id);
+    }
+
+    // workers: distinct assignedToIds for this client
+    const workerAssignments = await prisma.task.findMany({
+      where: {
+        clientId: contract.clientId,
+        assignedToId: { not: null },
+      },
+      select: { assignedToId: true },
+    });
+
+    const workerIds = Array.from(
+      new Set(workerAssignments.map((w) => w.assignedToId!).filter(Boolean))
+    );
+
+    if (workerIds.length) {
+      const workers = await prisma.user.findMany({
+        where: { id: { in: workerIds } },
+        select: { id: true, name: true, email: true },
+      });
+
+      for (const w of workers) {
+        await ensureSendbirdUser({
+          id: w.id,
+          name: w.name,
+          email: w.email,
+        });
+        members.push(w.id);
+      }
+    }
+
+    // Always include current user, just in case they weren't in members yet
+    if (!members.includes(user.id)) {
+      members.push(user.id);
+    }
+
+    // If no client user is linked yet, channel will still be created
+    if (!members.length) {
+      return fail(res, "No participants for chat", 400);
+    }
+
+    // Ensure channel exists and get channel URL
+    let channelUrl = contract.chatChannelUrl;
+
+    if (!channelUrl) {
+      const name =
+        contract.client?.companyName || `Contract ${contract.id}`;
+
+      // This should return the full Sendbird channel object
+      const channel = await ensureContractChannel(contract.id, name, members);
+
+      // Store only the URL string in our DB
+      channelUrl = channel.channel_url;
+
+      await prisma.contract.update({
+        where: { id: contract.id },
+        data: { chatChannelUrl: channelUrl },
+      });
+    }
+
+    // Issue a session token for this user
+    const sessionToken = await issueSendbirdSessionToken(user.id);
+
+    return success(res, {
+      appId: process.env.SENDBIRD_APP_ID,
+      userId: user.id,
+      sessionToken,
+      channelUrl,
+    });
+  } catch (err: any) {
+    console.error("getContractChatInfo error:", err.response?.data || err.message);
+    return fail(res, "Failed to get chat info", 500);
+  }
+}
+
+// POST /contracts/sendbird-sync-user
+/**
+ * Ensures a user (either the authenticated user or a specified user)
+ * is registered/updated in the Sendbird system.
+ */
+export async function sendbirdSyncUser(req: AuthedRequest, res: Response) {
+  try {
+    const { userId } = req.body;
+
+    // Default to the currently logged in user if userId isn't provided
+    const idToSync = userId || req.user?.id;
+    if (!idToSync) {
+      return fail(res, "No userId provided and no authenticated user", 400);
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: idToSync },
+      select: { id: true, name: true, email: true },
+    });
+
+    if (!user) {
+      return fail(res, "User not found", 404);
+    }
+
+    // This helper should already be imported at the top of this file
+    // and used in getContractChatInfo
+    await ensureSendbirdUser({
+      id: user.id,
+      // Use nullish coalescing to provide a fallback nickname if name is null
+      name: user.name ?? user.email ?? "AMBO User",
+      email: user.email,
+    });
+
+    return success(res, { syncedUserId: user.id });
+  } catch (err) {
+    console.error("sendbirdSyncUser error:", err);
+    return fail(res, "Failed to sync Sendbird user", 500);
   }
 }
