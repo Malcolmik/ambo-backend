@@ -1,17 +1,33 @@
 import { Router } from "express";
 import { authRequired } from "../../middleware/auth";
+import { login, registerWorker, registerClientUser } from "./auth.controller";
 import { requireRole } from "../../middleware/requireRole";
 import {
   createClient,
   getClient,
   listClients,
-  updateClient, // <--- This will stop red-lining ONLY if the controller is saved with the export
+  updateClient,
 } from "../../modules/clients/clients.controller";
 
 const router = Router();
 
 // GET /api/clients - List all clients
 router.get("/", authRequired, listClients);
+
+router.post("/login", login);
+
+router.post(
+  "/register-worker",
+  requireRole("SUPER_ADMIN"),
+  registerWorker
+);
+
+
+router.post(
+  "/register-client-viewer",
+  requireRole("SUPER_ADMIN"),
+  registerClientUser
+);
 
 // POST /api/clients - Create Client (SUPER_ADMIN only)
 router.post(
