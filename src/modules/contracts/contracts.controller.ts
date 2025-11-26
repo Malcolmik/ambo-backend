@@ -7,8 +7,12 @@ import {
   ensureContractChannel,
   issueSendbirdSessionToken,
 } from "../../services/sendbird.service";
+// Import Enums
+import { ContractStatus, PaymentStatus } from "@prisma/client";
 
-
+// =========================================================
+// NEW FUNCTION: Create Contract (POST /api/contracts)
+// =========================================================
 export async function createContract(req: AuthedRequest, res: Response) {
   try {
     const {
@@ -26,37 +30,49 @@ export async function createContract(req: AuthedRequest, res: Response) {
       return fail(res, "Client ID, package type, and total price are required", 400);
     }
 
-    // 1. Ensure services is an Array (Reverting previous string fix)
-    let servicesList = [];
+    // 1. Handle Services (Convert to String to be safe)
+    let servicesValue = services;
     if (Array.isArray(services)) {
-      servicesList = services;
-    } else if (typeof services === 'string') {
-      servicesList = services.split(',').map(s => s.trim());
+      servicesValue = services.join(", "); 
+    }
+
+    // 2. Handle Enums Strictly
+    // We use the imported Enum object to ensure validity.
+    
+    // Fix for 'undefined' error: Initialize with a guaranteed Enum value
+    let dbStatus: ContractStatus = ContractStatus.IN_PROGRESS; // Default
+    
+    if (status && Object.values(ContractStatus).includes(status as ContractStatus)) {
+        dbStatus = status as ContractStatus;
+    }
+
+    let dbPaymentStatus: PaymentStatus = PaymentStatus.PENDING; // Default
+    
+    if (paymentStatus && Object.values(PaymentStatus).includes(paymentStatus as PaymentStatus)) {
+        dbPaymentStatus = paymentStatus as PaymentStatus;
     }
 
     const contract = await prisma.contract.create({
       data: {
         clientId,
         packageType,
-        services: servicesList, // Send as proper Array
-        // 2. Ensure Decimal compatibility (send as string or number)
-        totalPrice: totalPrice, 
+        services: servicesValue, // Sending as String
+        totalPrice: Number(totalPrice), // Ensure decimal compatibility
         currency,
-        paymentStatus: paymentStatus || "PENDING",
-        status: status || "ACTIVE",
+        paymentStatus: dbPaymentStatus,
+        status: dbStatus,
       },
     });
 
     return success(res, contract, 201);
   } catch (err: any) {
     console.error("createContract error:", err);
-    // DEBUG MODE: Return the actual error to the client so we can see it in Curl
+    // Return detailed error for debugging
     return res.status(500).json({
       success: false,
       message: "Failed to create contract",
-      error: err.message, // The specific Prisma error
-      code: err.code,     // The Prisma error code (e.g., P2002)
-      meta: err.meta      // Additional details
+      error: err.message,
+      details: err.meta,
     });
   }
 }

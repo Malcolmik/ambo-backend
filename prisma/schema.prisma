@@ -51,6 +51,7 @@ enum PaymentStatus {
 }
 
 enum ContractStatus {
+  ACTIVE
   AWAITING_PAYMENT
   AWAITING_QUESTIONNAIRE
   READY_FOR_ASSIGNMENT
