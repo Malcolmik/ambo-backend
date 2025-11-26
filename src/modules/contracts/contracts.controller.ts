@@ -8,15 +8,13 @@ import {
   issueSendbirdSessionToken,
 } from "../../services/sendbird.service";
 
-// =========================================================
-// NEW FUNCTION: Create Contract (POST /api/contracts)
-// =========================================================
+
 export async function createContract(req: AuthedRequest, res: Response) {
   try {
     const {
       clientId,
       packageType,
-      services, // This is the array
+      services,
       totalPrice,
       currency,
       paymentStatus,
@@ -27,17 +25,22 @@ export async function createContract(req: AuthedRequest, res: Response) {
     if (!clientId || !packageType || !totalPrice) {
       return fail(res, "Client ID, package type, and total price are required", 400);
     }
-    
-    // 🔥 FIX: Convert array to a comma-separated string for compatibility.
-    // This resolves the "Expected Array<String>, provided [Brand Design, Website Build]" error.
-    const servicesString = Array.isArray(services) ? services.join(', ') : services;
+
+    // 1. Ensure services is an Array (Reverting previous string fix)
+    let servicesList = [];
+    if (Array.isArray(services)) {
+      servicesList = services;
+    } else if (typeof services === 'string') {
+      servicesList = services.split(',').map(s => s.trim());
+    }
 
     const contract = await prisma.contract.create({
       data: {
         clientId,
         packageType,
-        services: servicesString, // Use the converted string
-        totalPrice,
+        services: servicesList, // Send as proper Array
+        // 2. Ensure Decimal compatibility (send as string or number)
+        totalPrice: totalPrice, 
         currency,
         paymentStatus: paymentStatus || "PENDING",
         status: status || "ACTIVE",
@@ -46,11 +49,17 @@ export async function createContract(req: AuthedRequest, res: Response) {
 
     return success(res, contract, 201);
   } catch (err: any) {
-    console.error("createContract error:", err.response?.data || err.message);
-    return fail(res, "Failed to create contract", 500);
+    console.error("createContract error:", err);
+    // DEBUG MODE: Return the actual error to the client so we can see it in Curl
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create contract",
+      error: err.message, // The specific Prisma error
+      code: err.code,     // The Prisma error code (e.g., P2002)
+      meta: err.meta      // Additional details
+    });
   }
 }
-
 
 /**
  * GET /api/contracts
