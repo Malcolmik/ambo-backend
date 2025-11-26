@@ -9,6 +9,39 @@ import {
 } from "../../services/sendbird.service";
 
 /**
+ * GET /api/contracts
+ * Get all contracts (SUPER_ADMIN only)
+ */
+export async function getAllContracts(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    // Only SUPER_ADMIN can view all contracts
+    if (req.user.role !== "SUPER_ADMIN") {
+      return fail(res, "Forbidden", 403);
+    }
+
+    const contracts = await prisma.contract.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        client: true,
+        questionnaire: true,
+        payments: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
+    });
+
+    return success(res, contracts);
+  } catch (err: any) {
+    console.error("getAllContracts error:", err);
+    return fail(res, "Failed to load contracts", 500);
+  }
+}
+
+/**
  * GET /api/contracts/my
  * Get contracts for the authenticated user (CLIENT_VIEWER or SUPER_ADMIN)
  */
@@ -216,8 +249,8 @@ export async function updateContractStatus(req: AuthedRequest, res: Response) {
   }
 }
 
-// GET /api/contracts/:id/chat
 /**
+ * GET /api/contracts/:id/chat
  * Retrieves necessary information (Sendbird App ID, User ID, Session Token, Channel URL)
  * for the authenticated user to join the chat channel associated with a contract.
  * Ensures the user and the channel exist in Sendbird, and authorizes access based on user role.
@@ -362,8 +395,8 @@ export async function getContractChatInfo(req: AuthedRequest, res: Response) {
   }
 }
 
-// POST /contracts/sendbird-sync-user
 /**
+ * POST /api/contracts/sendbird-sync-user
  * Ensures a user (either the authenticated user or a specified user)
  * is registered/updated in the Sendbird system.
  */
