@@ -7,11 +7,20 @@ import {
   updateContractStatus,
   getContractChatInfo,
   sendbirdSyncUser,
+  createContract, 
 } from "./contracts.controller";
 import { authRequired } from "../../middleware/auth";
 import { requireRole } from "../../middleware/requireRole";
 
 const router = Router();
+
+// POST /api/contracts - Create new contract (SUPER_ADMIN only)
+router.post(
+  "/",
+  authRequired,
+  requireRole("SUPER_ADMIN"),
+  createContract  
+);
 
 // GET /api/contracts - Get all contracts (SUPER_ADMIN only)
 router.get("/", authRequired, requireRole("SUPER_ADMIN"), getAllContracts);

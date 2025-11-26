@@ -8,6 +8,49 @@ import {
   issueSendbirdSessionToken,
 } from "../../services/sendbird.service";
 
+// =========================================================
+// NEW FUNCTION: Create Contract (POST /api/contracts)
+// =========================================================
+export async function createContract(req: AuthedRequest, res: Response) {
+  try {
+    // Note: Role check (SUPER_ADMIN) is assumed to be handled by the route middleware.
+
+    const {
+      clientId,
+      packageType,
+      services,
+      totalPrice,
+      currency,
+      paymentStatus,
+      status,
+      // paymentRef is optional and not strictly needed for the create mutation structure
+    } = req.body;
+
+    // Basic validation
+    if (!clientId || !packageType || !totalPrice) {
+      return fail(res, "Client ID, package type, and total price are required", 400);
+    }
+
+    const contract = await prisma.contract.create({
+      data: {
+        clientId,
+        packageType,
+        services: services || [], // Default to empty array if null
+        totalPrice,
+        currency,
+        paymentStatus: paymentStatus || "PENDING",
+        status: status || "ACTIVE",
+      },
+    });
+
+    return success(res, contract, 201);
+  } catch (err: any) {
+    console.error("createContract error:", err);
+    return fail(res, "Failed to create contract", 500);
+  }
+}
+
+
 /**
  * GET /api/contracts
  * Get all contracts (SUPER_ADMIN only)
