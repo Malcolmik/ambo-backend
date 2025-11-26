@@ -13,29 +13,30 @@ import {
 // =========================================================
 export async function createContract(req: AuthedRequest, res: Response) {
   try {
-    // Note: Role check (SUPER_ADMIN) is assumed to be handled by the route middleware.
-
     const {
       clientId,
       packageType,
-      services,
+      services, // This is the array
       totalPrice,
       currency,
       paymentStatus,
       status,
-      // paymentRef is optional and not strictly needed for the create mutation structure
     } = req.body;
 
     // Basic validation
     if (!clientId || !packageType || !totalPrice) {
       return fail(res, "Client ID, package type, and total price are required", 400);
     }
+    
+    // 🔥 FIX: Convert array to a comma-separated string for compatibility.
+    // This resolves the "Expected Array<String>, provided [Brand Design, Website Build]" error.
+    const servicesString = Array.isArray(services) ? services.join(', ') : services;
 
     const contract = await prisma.contract.create({
       data: {
         clientId,
         packageType,
-        services: services || [], // Default to empty array if null
+        services: servicesString, // Use the converted string
         totalPrice,
         currency,
         paymentStatus: paymentStatus || "PENDING",
@@ -45,7 +46,7 @@ export async function createContract(req: AuthedRequest, res: Response) {
 
     return success(res, contract, 201);
   } catch (err: any) {
-    console.error("createContract error:", err);
+    console.error("createContract error:", err.response?.data || err.message);
     return fail(res, "Failed to create contract", 500);
   }
 }
