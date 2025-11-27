@@ -57,6 +57,132 @@ export async function login(req: Request, res: Response) {
 }
 
 /**
+ * POST /api/auth/register-client
+ * Client self-registration (public endpoint)
+ * Creates a CLIENT_VIEWER_PENDING user that requires admin approval
+ */
+export async function registerClient(req: Request, res: Response) {
+  try {
+    const { companyName, contactName, email, phone, password } = req.body;
+
+    // Validate required fields
+    if (!companyName || !contactName || !email || !password) {
+      return fail(res, "Company name, contact name, email, and password are required", 400);
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return fail(res, "Invalid email format", 400);
+    }
+
+    // Validate password length
+    if (password.length < 6) {
+      return fail(res, "Password must be at least 6 characters", 400);
+    }
+
+    // Check if email already exists
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (existingUser) {
+      return fail(res, "An account with this email already exists", 409);
+    }
+
+    // Check if company name already exists
+    const existingClient = await prisma.client.findFirst({
+      where: { companyName: companyName.trim() },
+    });
+
+    if (existingClient) {
+      return fail(res, "A company with this name already exists", 409);
+    }
+
+    // Hash password
+    const pwHash = await hashPassword(password);
+
+    // Create user and client in a transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Create the CLIENT_VIEWER_PENDING user
+      const newUser = await tx.user.create({
+        data: {
+          name: contactName.trim(),
+          email: email.toLowerCase(),
+          phone: phone || null,
+          passwordHash: pwHash,
+          role: "CLIENT_VIEWER_PENDING",
+          active: true,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          role: true,
+          active: true,
+          createdAt: true,
+        },
+      });
+
+      // Create the client company
+      const newClient = await tx.client.create({
+        data: {
+          companyName: companyName.trim(),
+          contactPerson: contactName.trim(),
+          email: email.toLowerCase(),
+          phone: phone || null,
+          linkedUserId: newUser.id,
+        },
+        select: {
+          id: true,
+          companyName: true,
+          contactPerson: true,
+          email: true,
+          phone: true,
+          createdAt: true,
+        },
+      });
+
+      // Audit log (if available)
+      try {
+        await tx.auditLog.create({
+          data: {
+            userId: newUser.id,
+            actionType: "CLIENT_SELF_REGISTERED",
+            entityType: "CLIENT",
+            entityId: newClient.id,
+            metaJson: {
+              companyName: newClient.companyName,
+              userEmail: newUser.email,
+              userName: newUser.name,
+            },
+          },
+        });
+      } catch (auditErr) {
+        console.error("Audit log error:", auditErr);
+        // Don't fail the transaction if audit log fails
+      }
+
+      return { user: newUser, client: newClient };
+    });
+
+    return success(
+      res,
+      {
+        message: "Registration successful. Your account is pending admin approval.",
+        user: result.user,
+        client: result.client,
+      },
+      201
+    );
+  } catch (err) {
+    console.error("registerClient error:", err);
+    return fail(res, "Registration failed. Please try again.", 500);
+  }
+}
+
+/**
  * POST /api/auth/register-worker
  * Create a new WORKER user (SUPER_ADMIN only)
  */

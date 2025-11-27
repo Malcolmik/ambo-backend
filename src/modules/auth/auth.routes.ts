@@ -3,6 +3,7 @@ import { authRequired } from "../../middleware/auth";
 import { requireRole } from "../../middleware/requireRole";
 import {
   login,
+  registerClient,
   registerWorker,
   registerClientUser,
   getCurrentUser,
@@ -13,6 +14,9 @@ const router = Router();
 
 // POST /api/auth/login - Login endpoint (public)
 router.post("/login", login);
+
+// POST /api/auth/register-client - Client self-registration (public)
+router.post("/register-client", registerClient);
 
 // POST /api/auth/register-worker - Create WORKER user (SUPER_ADMIN only)
 router.post(
