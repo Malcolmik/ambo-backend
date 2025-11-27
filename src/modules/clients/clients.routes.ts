@@ -2,18 +2,18 @@ import { Router } from "express";
 import { authRequired } from "../../middleware/auth";
 import { requireRole } from "../../middleware/requireRole";
 import {
-  listClients,
   createClient,
-  getClient,    // New import
-  updateClient, // New import
+  getClient,
+  listClients,
+  updateClient,
 } from "./clients.controller";
 
 const router = Router();
 
-// GET /api/clients - List all clients (SUPER_ADMIN, WORKER, CLIENT_VIEWER logic inside controller)
+// GET /api/clients - List all clients (authenticated users)
 router.get("/", authRequired, listClients);
 
-// POST /api/clients - Create Client (SUPER_ADMIN only)
+// POST /api/clients - Create client (SUPER_ADMIN only)
 router.post(
   "/",
   authRequired,
@@ -21,14 +21,10 @@ router.post(
   createClient
 );
 
-// GET /api/clients/:id - Get specific client details
-router.get(
-  "/:id",
-  authRequired,
-  getClient
-);
+// GET /api/clients/:id - Get specific client (authenticated users)
+router.get("/:id", authRequired, getClient);
 
-// PATCH /api/clients/:id - Update specific client (SUPER_ADMIN only)
+// PATCH /api/clients/:id - Update client (SUPER_ADMIN only)
 router.patch(
   "/:id",
   authRequired,

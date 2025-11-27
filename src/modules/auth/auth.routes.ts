@@ -1,55 +1,39 @@
 import { Router } from "express";
 import { authRequired } from "../../middleware/auth";
-import { login, registerWorker, registerClientUser } from "./auth.controller";
 import { requireRole } from "../../middleware/requireRole";
 import {
-  createClient,
-  getClient,
-  listClients,
-  updateClient,
-} from "../../modules/clients/clients.controller";
+  login,
+  registerWorker,
+  registerClientUser,
+  getCurrentUser,
+  changePassword,
+} from "./auth.controller";
 
 const router = Router();
 
-// GET /api/clients - List all clients
-router.get("/", authRequired, listClients);
-
+// POST /api/auth/login - Login endpoint (public)
 router.post("/login", login);
 
+// POST /api/auth/register-worker - Create WORKER user (SUPER_ADMIN only)
 router.post(
   "/register-worker",
+  authRequired,
   requireRole("SUPER_ADMIN"),
   registerWorker
 );
 
-
+// POST /api/auth/register-client-user - Create CLIENT_VIEWER user (SUPER_ADMIN only)
 router.post(
-  "/register-client-viewer",
+  "/register-client-user",
+  authRequired,
   requireRole("SUPER_ADMIN"),
   registerClientUser
 );
 
-// POST /api/clients - Create Client (SUPER_ADMIN only)
-router.post(
-  "/",
-  authRequired,
-  requireRole("SUPER_ADMIN"),
-  createClient
-);
+// GET /api/auth/me - Get current user details (authenticated users)
+router.get("/me", authRequired, getCurrentUser);
 
-// GET /api/clients/:id - Get specific client
-router.get(
-  "/:id",
-  authRequired,
-  getClient
-);
-
-// PATCH /api/clients/:id - Update specific client (SUPER_ADMIN only)
-router.patch(
-  "/:id",
-  authRequired,
-  requireRole("SUPER_ADMIN"),
-  updateClient
-);
+// POST /api/auth/change-password - Change password (authenticated users)
+router.post("/change-password", authRequired, changePassword);
 
 export default router;
