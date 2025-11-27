@@ -280,11 +280,42 @@ export async function paystackWebhook(req: Request, res: Response) {
         }
 
         // 3. Promote user role from CLIENT_VIEWER_PENDING to CLIENT_VIEWER
+        
+        // 3a. Handle the User who initiated the payment (if applicable)
         if (payment.user && payment.user.role === "CLIENT_VIEWER_PENDING") {
           await tx.user.update({
             where: { id: payment.user.id },
             data: { role: "CLIENT_VIEWER" },
           });
+        }
+
+        // 3b. Handle the Linked User on the Client Account (Requested Update)
+        const client = payment.contract?.client;
+        if (client && client.linkedUser && client.linkedUser.role === "CLIENT_VIEWER_PENDING") {
+          await tx.user.update({
+            where: { id: client.linkedUser.id },
+            data: { role: "CLIENT_VIEWER" }
+          });
+
+          // Audit log for Linked User Promotion
+          try {
+            await tx.auditLog.create({
+              data: {
+                userId: client.linkedUser.id,
+                actionType: "USER_AUTO_APPROVED_BY_PAYMENT",
+                entityType: "USER",
+                entityId: client.linkedUser.id,
+                metaJson: {
+                  paymentReference: reference,
+                  oldRole: "CLIENT_VIEWER_PENDING",
+                  newRole: "CLIENT_VIEWER",
+                },
+              },
+            });
+          } catch (auditErr) {
+            console.error("Audit log error:", auditErr);
+          }
+          console.log(`✅ Auto-promoted ${client.linkedUser.email} to CLIENT_VIEWER`);
         }
 
         // 4. Create notification for SUPER_ADMIN
