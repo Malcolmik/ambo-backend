@@ -408,8 +408,19 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
  */
 export async function paystackWebhook(req: Request, res: Response) {
   try {
-    // 1. Parse Event (Handle possible string body if body-parser is missed)
+    // Extensive Debug Logging to trace empty body issues
+    console.log("--- WEBHOOK START ---");
+    console.log("Headers:", JSON.stringify(req.headers));
+    
+    // 1. Parse Event (Handle possible string body or empty body)
     let event = req.body;
+    
+    // Fix: If body is empty, checking if it's a string won't help if it's undefined.
+    // We log explicitly to see what we got.
+    if (!event || Object.keys(event).length === 0) {
+      console.warn("WEBHOOK BODY IS EMPTY OR UNDEFINED. Check middleware.");
+    }
+
     if (typeof event === "string") {
       try {
         event = JSON.parse(event);
@@ -418,29 +429,26 @@ export async function paystackWebhook(req: Request, res: Response) {
       }
     }
     
-    // DEBUG LOG: See exactly what Paystack sent (useful for debugging empty refs)
-    console.log("PAYSTACK WEBHOOK EVENT TYPE:", event?.event);
+    console.log("PAYSTACK WEBHOOK BODY:", JSON.stringify(event));
 
     // Robust reference extraction
     const reference = event?.data?.reference || event?.reference;
 
     if (!reference) {
       console.warn("Webhook received but no reference found in payload");
-      // If we can't find a reference, we can't verify or process anything.
       return res.status(400).send("No reference found");
     }
 
     // 2. Verify signature
     const hash = crypto
       .createHmac("sha512", PAYSTACK_SECRET_KEY)
-      .update(JSON.stringify(req.body)) // Use raw body if possible, but req.body matches parsing
+      .update(JSON.stringify(req.body)) 
       .digest("hex");
 
     const signature = req.headers["x-paystack-signature"];
-
     let isAuthentic = hash === signature;
 
-    // If signature fails (common if body parsing messes up formatting), try API fallback
+    // If signature fails, try API fallback
     if (!isAuthentic) {
       console.warn(`Webhook signature mismatch for ref: ${reference}. Checking API...`);
       
@@ -458,6 +466,8 @@ export async function paystackWebhook(req: Request, res: Response) {
           isAuthentic = true;
           // IMPORTANT: Update event data from the API source of truth
           if (!event.data) event.data = verifyData.data;
+          // Ensure event type is set so logic below triggers
+          if (!event.event) event.event = "charge.success";
         }
       } catch (apiErr) {
         console.error("Webhook fallback verification failed:", apiErr);
@@ -471,6 +481,8 @@ export async function paystackWebhook(req: Request, res: Response) {
 
     // 3. Handle charge.success event
     const eventType = event.event;
+    console.log("Processing event type:", eventType);
+    
     if (eventType === "charge.success") {
       const data = event.data || {}; 
 
@@ -487,7 +499,6 @@ export async function paystackWebhook(req: Request, res: Response) {
 
       if (!payment) {
         console.error(`Payment not found for reference: ${reference}`);
-        // Optional: You could choose to Create a Payment record here if it's missing entirely
         return res.status(404).send("Payment not found");
       }
 
@@ -560,7 +571,6 @@ export async function paystackWebhook(req: Request, res: Response) {
         }
 
         // 3b. Handle the Linked User on the Client Account (Auto-promotion)
-        // Ensure we use contractClient found above
         if (contractClient && contractClient.linkedUser && contractClient.linkedUser.role === "CLIENT_VIEWER_PENDING") {
           await tx.user.update({
             where: { id: contractClient.linkedUser.id },
