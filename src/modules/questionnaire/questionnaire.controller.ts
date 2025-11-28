@@ -26,34 +26,43 @@ export async function submitQuestionnaire(req: AuthedRequest, res: Response) {
     }
 
     // Check authorization
-    if (req.user?.role === "CLIENT_VIEWER") {
-      const client = await prisma.client.findFirst({
-        where: { linkedUserId: req.user.id },
-      });
+    let isAuthorized = false;
 
-      if (!client || client.id !== contract.clientId) {
-        return fail(res, "Forbidden", 403);
+    if (req.user?.role === "SUPER_ADMIN") {
+      isAuthorized = true;
+    } else if (req.user?.role === "CLIENT_VIEWER" || req.user?.role === "CLIENT_ADMIN") {
+      // Check if the user is linked to the client who owns this contract
+      if (contract.client.linkedUserId === req.user.id) {
+        isAuthorized = true;
       }
-    } else if (req.user?.role !== "SUPER_ADMIN") {
-      return fail(res, "Forbidden", 403);
     }
 
-    // Check if questionnaire already exists
+    if (!isAuthorized) {
+      return fail(res, "Forbidden: You are not authorized to submit this questionnaire", 403);
+    }
+
+    // Check if questionnaire already exists (Update if it does)
     const existing = await prisma.questionnaire.findUnique({
       where: { contractId },
     });
 
     if (existing) {
-      return fail(res, "Questionnaire already submitted for this contract", 409);
-    }
+      const updatedQuestionnaire = await prisma.questionnaire.update({
+        where: { contractId },
+        data: { 
+          responses,
+        },
+      });
+      
+      // Ensure status is updated if it wasn't already
+      if (contract.status === "AWAITING_QUESTIONNAIRE") {
+           await prisma.contract.update({
+              where: { id: contractId },
+              data: { status: "READY_FOR_ASSIGNMENT" },
+          });
+      }
 
-    // Check if contract is in correct status
-    if (contract.status !== "AWAITING_QUESTIONNAIRE") {
-      return fail(
-        res,
-        `Cannot submit questionnaire. Contract status is ${contract.status}`,
-        400
-      );
+      return success(res, { message: "Questionnaire updated successfully", questionnaire: updatedQuestionnaire });
     }
 
     // Create questionnaire
@@ -130,19 +139,11 @@ export async function getQuestionnaire(req: AuthedRequest, res: Response) {
       return fail(res, "Contract not found", 404);
     }
 
-    if (!contract.questionnaire) {
-      return fail(res, "Questionnaire not found for this contract", 404);
-    }
+    // Authorization Logic
+    let isAuthorized = false;
 
-    // Check authorization
-    if (req.user?.role === "CLIENT_VIEWER") {
-      const client = await prisma.client.findFirst({
-        where: { linkedUserId: req.user.id },
-      });
-
-      if (!client || client.id !== contract.clientId) {
-        return fail(res, "Forbidden", 403);
-      }
+    if (req.user?.role === "SUPER_ADMIN") {
+      isAuthorized = true;
     } else if (req.user?.role === "WORKER") {
       // Workers can see questionnaires for contracts they're working on
       const hasTask = await prisma.task.findFirst({
@@ -151,12 +152,19 @@ export async function getQuestionnaire(req: AuthedRequest, res: Response) {
           clientId: contract.clientId,
         },
       });
-
-      if (!hasTask) {
-        return fail(res, "Forbidden", 403);
+      if (hasTask) isAuthorized = true;
+    } else if (req.user?.role === "CLIENT_VIEWER" || req.user?.role === "CLIENT_ADMIN") {
+       if (contract.client.linkedUserId === req.user.id) {
+        isAuthorized = true;
       }
-    } else if (req.user?.role !== "SUPER_ADMIN") {
-      return fail(res, "Forbidden", 403);
+    }
+
+    if (!isAuthorized) {
+        return fail(res, "Forbidden", 403);
+    }
+
+    if (!contract.questionnaire) {
+      return success(res, { questionnaire: null, contractStatus: contract.status });
     }
 
     return success(res, {
