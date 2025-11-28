@@ -408,41 +408,44 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
  */
 export async function paystackWebhook(req: Request, res: Response) {
   try {
-    // Extensive Debug Logging to trace empty body issues
-    console.log("--- WEBHOOK START ---");
-    console.log("Headers:", JSON.stringify(req.headers));
-    
-    // 1. Parse Event (Handle possible string body or empty body)
     let event = req.body;
-    
-    // Fix: If body is empty, checking if it's a string won't help if it's undefined.
-    // We log explicitly to see what we got.
-    if (!event || Object.keys(event).length === 0) {
-      console.warn("WEBHOOK BODY IS EMPTY OR UNDEFINED. Check middleware.");
-    }
+    let rawBody = req.body;
 
-    if (typeof event === "string") {
+    // --- FIX: Handle Buffer Body correctly (detected from logs) ---
+    if (Buffer.isBuffer(req.body)) {
+      console.log("Paystack Webhook: Received Buffer body, converting...");
       try {
-        event = JSON.parse(event);
+        // Parse the buffer to get the event object
+        const bodyString = req.body.toString('utf8');
+        event = JSON.parse(bodyString);
+        // For signature, we MUST use the buffer directly, NOT stringify it
+        rawBody = req.body; 
       } catch (e) {
-        console.error("Failed to parse webhook body string", e);
+        console.error("Paystack Webhook: Failed to parse Buffer body:", e);
       }
+    } else if (typeof req.body === 'object') {
+        // Fallback for standard express json parser
+        // If it's already an object, we must stringify it for signature verification
+        // NOTE: This might fail if key order differs, hence the fallback API check below is critical
+        rawBody = JSON.stringify(req.body);
     }
-    
-    console.log("PAYSTACK WEBHOOK BODY:", JSON.stringify(event));
 
-    // Robust reference extraction
+    // Extensive Debug Logging
+    console.log("--- WEBHOOK START ---");
+    // console.log("Headers:", JSON.stringify(req.headers)); // Commented out to reduce noise
+    
+    // Robust reference extraction (handle different payload structures)
     const reference = event?.data?.reference || event?.reference;
 
     if (!reference) {
-      console.warn("Webhook received but no reference found in payload");
+      console.warn("Paystack Webhook: No reference found in payload");
       return res.status(400).send("No reference found");
     }
 
     // 2. Verify signature
     const hash = crypto
       .createHmac("sha512", PAYSTACK_SECRET_KEY)
-      .update(JSON.stringify(req.body)) 
+      .update(rawBody) // Use rawBody (Buffer or String) here
       .digest("hex");
 
     const signature = req.headers["x-paystack-signature"];
