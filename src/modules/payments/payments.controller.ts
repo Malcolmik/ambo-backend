@@ -15,8 +15,10 @@ if (!PAYSTACK_SECRET_KEY) {
 
 // --- CONFIGURATION: Service & Package Definitions ---
 
-// 1. Individual Service Prices (USD) based on AMBO MEDIA Template
+// 1. Individual Service Prices (USD)
+// expanded to include variations from both DOCX and Frontend
 const SERVICE_PRICES: Record<string, number> = {
+  // --- DOCX / Original Keys ---
   "Content writing.": 150,
   "Social Media Management": 750,
   "P-P-C Marketing (SMM & GOOGLE)": 151.5,
@@ -31,14 +33,22 @@ const SERVICE_PRICES: Record<string, number> = {
   "Commercial Shoots/ Promotions": 600,
   "Community Management": 175,
   "Competitive Market Analysis.": 150,
-  // Normalized keys (handling slight naming variations in template)
-  "PPC Marketing": 151.5, 
+
+  // --- Frontend / Clean Keys (Likely what Lovable sends) ---
+  "Content Writing": 150,
+  "PPC Marketing": 151.5,
+  "Content Creativity & Production": 525,
+  "SEM (Search Engine Marketing)": 153,
+  "Commercial Shoots/Promotions": 600,
+  "Competitive Market Analysis": 150,
+  
+  // --- Normalized / Fallbacks ---
   "Search Engine Marketing": 153,
   "Content creativity and Production for all SM platforms": 525,
-  "Account Management (CRM)": 0, // Not priced explicitly in list, assuming part of package or 0
-  "Online Marketing Consultations": 0, // Not priced explicitly
   "Commercial shoots and Promotions": 600,
-  "Competitive Marketing Analysis": 150
+  "Competitive Marketing Analysis": 150,
+  "Account Management (CRM)": 0,
+  "Online Marketing Consultations": 0
 };
 
 // 2. Package Prices (USD)
@@ -94,19 +104,16 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    // Services: Optional array of strings for stand-alone items or add-ons
-    // Currency: Defaults to USD per the template, but can be overridden
     const { packageType, currency, services = [] } = req.body;
+    // Default to USD per new requirement, but allow override if needed
     const txCurrency = currency || "USD"; 
 
-    // Validate required fields
-    if (!packageType) {
-      return fail(res, "Package type is required", 400);
-    }
+    console.log(`Init Payment: User=${req.user.email}, Package=${packageType}, Services=${services.length}`);
 
     // Validate package type
     const validPackages = ["AMBO CLASSIC", "AMBO DELUXE", "AMBO PREMIUM", "CUSTOM"];
     if (!validPackages.includes(packageType)) {
+      console.warn(`Invalid Package Type received: ${packageType}`);
       return fail(res, "Invalid package type. Must be AMBO CLASSIC, DELUXE, PREMIUM or CUSTOM.", 400);
     }
 
@@ -139,37 +146,28 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       // Calculate total
       for (const service of services) {
         const price = SERVICE_PRICES[service];
-        // If price is undefined, we might have a bad service name. 
-        // For robustness, we log warning and add 0, or you could fail request.
         if (price !== undefined) {
           amountNumber += price;
         } else {
-          console.warn(`Warning: Unknown service '${service}' requested by user ${req.user.id}`);
+          console.warn(`Warning: Service '${service}' has no price defined in backend.`);
+          // We continue, assuming 0 price, or you could throw error.
         }
       }
     } else {
-      // For Standard Packages (Classic, Deluxe, Premium)
+      // For Standard Packages
       amountNumber = PACKAGE_PRICES[packageType] || 0;
       
       // Merge package services + any extra add-ons sent
       const defaultServices = PACKAGE_DEFINITIONS[packageType] || [];
+      // Use Set to remove duplicates
       const serviceSet = new Set([...defaultServices, ...services]);
       finalServices = Array.from(serviceSet);
-
-      // (Optional) If you want to charge extra for add-ons to a package:
-      if (services.length > 0) {
-         for (const service of services) {
-           // Only add price if it's NOT already in the default package
-           if (!defaultServices.includes(service)) {
-             const price = SERVICE_PRICES[service] || 0;
-             amountNumber += price;
-           }
-         }
-      }
     }
 
+    console.log(`Calculated Total: ${amountNumber} ${txCurrency}`);
+
     if (amountNumber <= 0) {
-      return fail(res, "Calculated amount is invalid (0 or less). Check service selection.", 400);
+      return fail(res, "Calculated amount is invalid (0). Please check your selection.", 400);
     }
 
     // Generate unique reference
@@ -215,7 +213,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       data: {
         clientId: client.id,
         packageType,
-        services: finalServices, // Save the combined list of services
+        services: finalServices, 
         totalPrice: amountNumber,
         currency: txCurrency,
         paymentStatus: "PENDING",
@@ -270,8 +268,13 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       contractId: contract.id,
     });
   } catch (err: any) {
-    console.error("initializePayment error:", err.response?.data || err.message);
-    return fail(res, "Failed to initialize payment", 500);
+    // Detailed error logging for Paystack issues
+    const paystackError = err.response?.data;
+    console.error("initializePayment error details:", JSON.stringify(paystackError || err.message));
+    
+    // Return specific message if from Paystack
+    const msg = paystackError?.message || "Payment initiation failed";
+    return fail(res, msg, 500);
   }
 }
 
