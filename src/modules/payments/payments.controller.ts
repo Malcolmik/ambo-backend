@@ -18,8 +18,149 @@ function nairaToKobo(ngn: number): number {
 }
 
 /**
+ * POST /api/payments/initialize
+ * Initialize payment for package selection (called from frontend /packages page)
+ * This is the NEW endpoint that matches the frontend expectation
+ */
+export async function initializePayment(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    const { packageType, amount } = req.body;
+
+    // Validate required fields
+    if (!packageType || !amount) {
+      return fail(res, "Package type and amount are required", 400);
+    }
+
+    // Validate package type
+    const validPackages = ["BASIC", "STANDARD", "PREMIUM"];
+    if (!validPackages.includes(packageType)) {
+      return fail(res, "Invalid package type", 400);
+    }
+
+    // Get client information from logged-in user
+    const client = await prisma.client.findFirst({
+      where: { linkedUserId: req.user.id },
+      select: {
+        id: true,
+        companyName: true,
+        email: true,
+      },
+    });
+
+    if (!client) {
+      return fail(res, "Client not found. Please contact support.", 404);
+    }
+
+    const amountNumber = Number(amount);
+    if (isNaN(amountNumber) || amountNumber <= 0) {
+      return fail(res, "Invalid amount", 400);
+    }
+
+    const amountKobo = nairaToKobo(amountNumber);
+
+    // Generate unique reference
+    const reference = `AMBO-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    // Call Paystack Initialize API
+    const resp = await axios.post(
+      `${PAYSTACK_BASE_URL}/transaction/initialize`,
+      {
+        email: client.email,
+        amount: amountKobo,
+        currency: "NGN",
+        reference: reference,
+        metadata: {
+          packageType: packageType,
+          clientId: client.id,
+          userId: req.user.id,
+          companyName: client.companyName,
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const data = resp.data;
+    if (!data.status) {
+      console.error("Paystack init error:", data);
+      return fail(res, "Failed to initialize payment", 502);
+    }
+
+    // Create Contract record
+    const contract = await prisma.contract.create({
+      data: {
+        clientId: client.id,
+        packageType,
+        services: [], // Will be filled based on package
+        totalPrice: amountNumber,
+        currency: "NGN",
+        paymentStatus: "PENDING",
+        status: "AWAITING_PAYMENT",
+        paymentRef: reference,
+      },
+    });
+
+    // Create Payment record
+    await prisma.payment.create({
+      data: {
+        provider: "PAYSTACK",
+        reference,
+        amount: amountKobo,
+        currency: "NGN",
+        status: "PENDING",
+        customerEmail: client.email,
+        userId: req.user.id,
+        contractId: contract.id,
+        meta: {
+          packageType,
+        },
+      },
+    });
+
+    // Audit log
+    try {
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          actionType: "PAYMENT_INITIATED",
+          entityType: "CONTRACT",
+          entityId: contract.id,
+          metaJson: {
+            reference,
+            amount: amountNumber,
+            packageType,
+          },
+        },
+      });
+    } catch (auditErr) {
+      console.error("Audit log error:", auditErr);
+      // Don't fail if audit log fails
+    }
+
+    return success(res, {
+      authorizationUrl: data.data.authorization_url,
+      accessCode: data.data.access_code,
+      reference: reference,
+      contractId: contract.id,
+    });
+  } catch (err: any) {
+    console.error("initializePayment error:", err.response?.data || err.message);
+    return fail(res, "Payment initialization failed", 500);
+  }
+}
+
+/**
  * POST /api/payments/initiate
  * Initializes payment with Paystack and creates Contract + Payment records
+ * (Legacy endpoint - kept for backward compatibility)
  */
 export async function initiatePayment(req: AuthedRequest, res: Response) {
   try {
@@ -289,7 +430,7 @@ export async function paystackWebhook(req: Request, res: Response) {
           });
         }
 
-        // 3b. Handle the Linked User on the Client Account (Requested Update)
+        // 3b. Handle the Linked User on the Client Account (Auto-promotion)
         const client = payment.contract?.client;
         if (client && client.linkedUser && client.linkedUser.role === "CLIENT_VIEWER_PENDING") {
           await tx.user.update({
