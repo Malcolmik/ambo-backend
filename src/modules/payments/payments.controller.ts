@@ -7,6 +7,8 @@ import { success, fail } from "../../utils/response";
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || "";
 const PAYSTACK_BASE_URL = "https://api.paystack.co";
+// Use env variable or default to your lovable app URL from the screenshot
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://ambo-ops-hub.lovable.app";
 
 if (!PAYSTACK_SECRET_KEY) {
   console.warn("[PAYSTACK] PAYSTACK_SECRET_KEY is not set in .env");
@@ -19,8 +21,7 @@ function nairaToKobo(ngn: number): number {
 
 /**
  * POST /api/payments/initialize
- * Initialize payment for package selection (called from frontend /packages page)
- * This is the NEW endpoint that matches the frontend expectation
+ * Initialize a Paystack payment for package selection
  */
 export async function initializePayment(req: AuthedRequest, res: Response) {
   try {
@@ -41,7 +42,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       return fail(res, "Invalid package type", 400);
     }
 
-    // Get client information from logged-in user
+    // Get client information
     const client = await prisma.client.findFirst({
       where: { linkedUserId: req.user.id },
       select: {
@@ -60,26 +61,28 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       return fail(res, "Invalid amount", 400);
     }
 
-    const amountKobo = nairaToKobo(amountNumber);
-
     // Generate unique reference
     const reference = `AMBO-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-    // Call Paystack Initialize API
+    // Prepare Paystack initialization data
+    const paystackData = {
+      email: client.email,
+      amount: amountNumber * 100, // Convert to kobo (Naira minor unit)
+      currency: "NGN",
+      reference: reference,
+      callback_url: `${FRONTEND_URL}/payment/callback`,
+      metadata: {
+        packageType: packageType,
+        clientId: client.id,
+        userId: req.user.id,
+        companyName: client.companyName,
+      },
+    };
+
+    // Initialize payment with Paystack using AXIOS (Fixes fetch errors)
     const resp = await axios.post(
       `${PAYSTACK_BASE_URL}/transaction/initialize`,
-      {
-        email: client.email,
-        amount: amountKobo,
-        currency: "NGN",
-        reference: reference,
-        metadata: {
-          packageType: packageType,
-          clientId: client.id,
-          userId: req.user.id,
-          companyName: client.companyName,
-        },
-      },
+      paystackData,
       {
         headers: {
           Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
@@ -89,17 +92,18 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
     );
 
     const data = resp.data;
+
     if (!data.status) {
-      console.error("Paystack init error:", data);
-      return fail(res, "Failed to initialize payment", 502);
+      console.error("Paystack initialization failed:", data);
+      return fail(res, data.message || "Failed to initialize payment", 400);
     }
 
-    // Create Contract record
+    // 1. Create Contract record immediately (so it shows as Pending in UI)
     const contract = await prisma.contract.create({
       data: {
         clientId: client.id,
         packageType,
-        services: [], // Will be filled based on package
+        services: [], // Will be filled based on package or later
         totalPrice: amountNumber,
         currency: "NGN",
         paymentStatus: "PENDING",
@@ -108,24 +112,24 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       },
     });
 
-    // Create Payment record
+    // 2. Create Payment record linked to Contract
     await prisma.payment.create({
       data: {
-        provider: "PAYSTACK",
-        reference,
-        amount: amountKobo,
+        contractId: contract.id, // Linked!
+        amount: amountNumber,
         currency: "NGN",
+        reference: reference,
         status: "PENDING",
-        customerEmail: client.email,
-        userId: req.user.id,
-        contractId: contract.id,
+        provider: "PAYSTACK",
         meta: {
-          packageType,
+          packageType: packageType,
+          clientId: client.id,
+          userId: req.user.id,
         },
       },
     });
 
-    // Audit log
+    // 3. Audit log
     try {
       await prisma.auditLog.create({
         data: {
@@ -142,18 +146,18 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       });
     } catch (auditErr) {
       console.error("Audit log error:", auditErr);
-      // Don't fail if audit log fails
     }
 
+    // Return Paystack authorization URL and reference
     return success(res, {
       authorizationUrl: data.data.authorization_url,
       accessCode: data.data.access_code,
-      reference: reference,
+      reference: data.data.reference,
       contractId: contract.id,
     });
   } catch (err: any) {
     console.error("initializePayment error:", err.response?.data || err.message);
-    return fail(res, "Payment initialization failed", 500);
+    return fail(res, "Failed to initialize payment", 500);
   }
 }
 
@@ -285,18 +289,22 @@ export async function initiatePayment(req: AuthedRequest, res: Response) {
 }
 
 /**
- * POST /api/payments/verify
- * Manually verify a payment reference
+ * GET /api/payments/verify/:reference
+ * Verify a payment status
  */
 export async function verifyPayment(req: AuthedRequest, res: Response) {
   try {
-    const { reference } = req.body;
-
-    if (!reference) {
-      return fail(res, "Reference is required", 400);
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
     }
 
-    // Call Paystack Verify API
+    const { reference } = req.params;
+
+    if (!reference) {
+      return fail(res, "Payment reference is required", 400);
+    }
+
+    // Verify with Paystack using AXIOS
     const resp = await axios.get(
       `${PAYSTACK_BASE_URL}/transaction/verify/${reference}`,
       {
@@ -307,8 +315,9 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
     );
 
     const data = resp.data;
+
     if (!data.status) {
-      return fail(res, "Verification failed", 502);
+      return fail(res, data.message || "Failed to verify payment", 400);
     }
 
     const txData = data.data;
@@ -342,7 +351,7 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
     });
   } catch (err: any) {
     console.error("verifyPayment error:", err.response?.data || err.message);
-    return fail(res, "Payment verification failed", 500);
+    return fail(res, "Failed to verify payment", 500);
   }
 }
 
@@ -352,10 +361,7 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
  */
 export async function paystackWebhook(req: Request, res: Response) {
   try {
-    // TEMPORARY: Signature verification disabled for testing
-    // TODO: Re-enable with proper raw body handling
-    // Issue: Express parses body as JSON, so JSON.stringify produces different result than raw body
-    /*
+    // 1. Verify signature
     const hash = crypto
       .createHmac("sha512", PAYSTACK_SECRET_KEY)
       .update(JSON.stringify(req.body))
@@ -367,8 +373,6 @@ export async function paystackWebhook(req: Request, res: Response) {
       console.error("Invalid webhook signature");
       return res.status(401).send("Invalid signature");
     }
-    */
-    console.log("⚠️ Webhook signature verification temporarily disabled");
 
     // 2. Parse event
     const event = req.body;
@@ -427,7 +431,7 @@ export async function paystackWebhook(req: Request, res: Response) {
 
         // 3. Promote user role from CLIENT_VIEWER_PENDING to CLIENT_VIEWER
         
-        // 3a. Handle the User who initiated the payment (if applicable)
+        // 3a. Handle the User who initiated the payment
         if (payment.user && payment.user.role === "CLIENT_VIEWER_PENDING") {
           await tx.user.update({
             where: { id: payment.user.id },
