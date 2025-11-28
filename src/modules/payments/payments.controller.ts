@@ -125,6 +125,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
     let finalServices: string[] = [];
 
     if (packageType === "CUSTOM") {
+      // 1. Pure Custom Package (Just the selected services)
       if (!Array.isArray(services) || services.length === 0) {
         return fail(res, "For CUSTOM packages, select at least one service", 400);
       }
@@ -134,8 +135,25 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
         if (price !== undefined) amountUSD += price;
       }
     } else {
+      // 2. Standard Package + Optional Add-ons (Hybrid)
       amountUSD = PACKAGE_PRICES[packageType] || 0;
       const defaultServices = PACKAGE_DEFINITIONS[packageType] || [];
+      
+      // Calculate Add-ons: Iterate through selected services
+      if (Array.isArray(services) && services.length > 0) {
+        for (const service of services) {
+          // Only add price if this service is NOT already included in the base package
+          if (!defaultServices.includes(service)) {
+            const price = SERVICE_PRICES[service];
+            if (price !== undefined) {
+              console.log(`Adding Add-on: ${service} ($${price})`);
+              amountUSD += price;
+            }
+          }
+        }
+      }
+
+      // Merge base services + add-ons for the final record
       const serviceSet = new Set([...defaultServices, ...services]);
       finalServices = Array.from(serviceSet);
     }
