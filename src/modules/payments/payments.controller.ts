@@ -7,7 +7,6 @@ import { success, fail } from "../../utils/response";
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || "";
 const PAYSTACK_BASE_URL = "https://api.paystack.co";
-// Use env variable or default to your lovable app URL from the screenshot
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://ambo-ops-hub.lovable.app";
 
 if (!PAYSTACK_SECRET_KEY) {
@@ -79,7 +78,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       },
     };
 
-    // Initialize payment with Paystack using AXIOS (Fixes fetch errors)
+    // Initialize payment with Paystack using AXIOS
     const resp = await axios.post(
       `${PAYSTACK_BASE_URL}/transaction/initialize`,
       paystackData,
@@ -409,41 +408,59 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
  */
 export async function paystackWebhook(req: Request, res: Response) {
   try {
-    const event = req.body;
-    const reference = event.data?.reference;
+    // 1. Parse Event (Handle possible string body if body-parser is missed)
+    let event = req.body;
+    if (typeof event === "string") {
+      try {
+        event = JSON.parse(event);
+      } catch (e) {
+        console.error("Failed to parse webhook body string", e);
+      }
+    }
+    
+    // DEBUG LOG: See exactly what Paystack sent (useful for debugging empty refs)
+    console.log("PAYSTACK WEBHOOK EVENT TYPE:", event?.event);
 
-    // 1. Verify signature
+    // Robust reference extraction
+    const reference = event?.data?.reference || event?.reference;
+
+    if (!reference) {
+      console.warn("Webhook received but no reference found in payload");
+      // If we can't find a reference, we can't verify or process anything.
+      return res.status(400).send("No reference found");
+    }
+
+    // 2. Verify signature
     const hash = crypto
       .createHmac("sha512", PAYSTACK_SECRET_KEY)
-      .update(JSON.stringify(req.body))
+      .update(JSON.stringify(req.body)) // Use raw body if possible, but req.body matches parsing
       .digest("hex");
 
     const signature = req.headers["x-paystack-signature"];
 
     let isAuthentic = hash === signature;
 
+    // If signature fails (common if body parsing messes up formatting), try API fallback
     if (!isAuthentic) {
-      console.warn(`Webhook signature mismatch for ref: ${reference}. Attempting API verification fallback...`);
+      console.warn(`Webhook signature mismatch for ref: ${reference}. Checking API...`);
       
-      // Fallback: Verify directly with Paystack to confirm the transaction is actually successful
-      // This bypasses the raw body parsing issue while maintaining security
-      if (reference) {
-         try {
-           const verifyResponse = await axios.get(
-             `${PAYSTACK_BASE_URL}/transaction/verify/${reference}`,
-             {
-               headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` },
-             }
-           );
-           
-           const verifyData = verifyResponse.data;
-           if (verifyData.status && verifyData.data.status === "success") {
-             console.log(`API verification confirmed success for ref: ${reference}`);
-             isAuthentic = true;
-           }
-         } catch (apiErr) {
-           console.error("Webhook fallback verification failed:", apiErr);
-         }
+      try {
+        const verifyResponse = await axios.get(
+          `${PAYSTACK_BASE_URL}/transaction/verify/${reference}`,
+          {
+            headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` },
+          }
+        );
+        
+        const verifyData = verifyResponse.data;
+        if (verifyData.status && verifyData.data.status === "success") {
+          console.log(`API verification confirmed success for ref: ${reference}`);
+          isAuthentic = true;
+          // IMPORTANT: Update event data from the API source of truth
+          if (!event.data) event.data = verifyData.data;
+        }
+      } catch (apiErr) {
+        console.error("Webhook fallback verification failed:", apiErr);
       }
     }
 
@@ -452,12 +469,10 @@ export async function paystackWebhook(req: Request, res: Response) {
       return res.status(401).send("Invalid signature");
     }
 
-    // 2. Parse event
-    console.log("Paystack webhook event:", event.event);
-
     // 3. Handle charge.success event
-    if (event.event === "charge.success") {
-      const data = event.data;
+    const eventType = event.event;
+    if (eventType === "charge.success") {
+      const data = event.data || {}; 
 
       // Find payment record
       const payment = await prisma.payment.findUnique({
@@ -472,6 +487,7 @@ export async function paystackWebhook(req: Request, res: Response) {
 
       if (!payment) {
         console.error(`Payment not found for reference: ${reference}`);
+        // Optional: You could choose to Create a Payment record here if it's missing entirely
         return res.status(404).send("Payment not found");
       }
 
@@ -488,13 +504,15 @@ export async function paystackWebhook(req: Request, res: Response) {
           where: { reference },
           data: {
             status: "PAID",
-            paidAt: new Date(data.paid_at),
-            channel: data.channel,
+            paidAt: new Date(data.paid_at || new Date()), 
+            channel: data.channel || 'unknown',
             rawPayload: data,
           },
         });
 
         // 2. Update Contract status
+        let contractClient = payment.contract?.client;
+        
         if (payment.contract) {
           await tx.contract.update({
             where: { id: payment.contract.id },
@@ -503,6 +521,32 @@ export async function paystackWebhook(req: Request, res: Response) {
               status: "AWAITING_QUESTIONNAIRE",
             },
           });
+        } else {
+            // Scenario B: No contract linked (Safety fallback)
+            const meta: any = data.metadata || payment.meta || {};
+            if (meta.clientId && meta.packageType) {
+                console.log("Creating/Linking contract in webhook for:", reference);
+                const newContract = await tx.contract.create({
+                    data: {
+                        clientId: meta.clientId,
+                        packageType: meta.packageType,
+                        services: [],
+                        totalPrice: data.amount ? data.amount / 100 : 0,
+                        currency: data.currency || "NGN",
+                        paymentStatus: "PAID",
+                        status: "AWAITING_QUESTIONNAIRE",
+                        paymentRef: reference,
+                    },
+                    include: { client: { include: { linkedUser: true } } }
+                });
+                contractClient = newContract.client;
+                
+                // Link payment
+                await tx.payment.update({
+                    where: { id: payment.id },
+                    data: { contractId: newContract.id }
+                });
+            }
         }
 
         // 3. Promote user role from CLIENT_VIEWER_PENDING to CLIENT_VIEWER
@@ -516,10 +560,10 @@ export async function paystackWebhook(req: Request, res: Response) {
         }
 
         // 3b. Handle the Linked User on the Client Account (Auto-promotion)
-        const client = payment.contract?.client;
-        if (client && client.linkedUser && client.linkedUser.role === "CLIENT_VIEWER_PENDING") {
+        // Ensure we use contractClient found above
+        if (contractClient && contractClient.linkedUser && contractClient.linkedUser.role === "CLIENT_VIEWER_PENDING") {
           await tx.user.update({
-            where: { id: client.linkedUser.id },
+            where: { id: contractClient.linkedUser.id },
             data: { role: "CLIENT_VIEWER" }
           });
 
@@ -527,10 +571,10 @@ export async function paystackWebhook(req: Request, res: Response) {
           try {
             await tx.auditLog.create({
               data: {
-                userId: client.linkedUser.id,
+                userId: contractClient.linkedUser.id,
                 actionType: "USER_AUTO_APPROVED_BY_PAYMENT",
                 entityType: "USER",
-                entityId: client.linkedUser.id,
+                entityId: contractClient.linkedUser.id,
                 metaJson: {
                   paymentReference: reference,
                   oldRole: "CLIENT_VIEWER_PENDING",
@@ -541,7 +585,7 @@ export async function paystackWebhook(req: Request, res: Response) {
           } catch (auditErr) {
             console.error("Audit log error:", auditErr);
           }
-          console.log(`✅ Auto-promoted ${client.linkedUser.email} to CLIENT_VIEWER`);
+          console.log(`✅ Auto-promoted ${contractClient.linkedUser.email} to CLIENT_VIEWER`);
         }
 
         // 4. Create notification for SUPER_ADMIN
@@ -556,9 +600,9 @@ export async function paystackWebhook(req: Request, res: Response) {
               userId: admin.id,
               type: "PAYMENT_CONFIRMED",
               title: "New Payment Received",
-              body: `Payment of ${data.amount / 100} ${data.currency} received from ${
-                payment.contract?.client.companyName || "Unknown"
-              }. Contract ID: ${payment.contract?.id}`,
+              body: `Payment of ${data.amount ? data.amount / 100 : 'Unknown'} ${data.currency || 'NGN'} received from ${
+                contractClient?.companyName || "Unknown"
+              }. Contract ID: ${payment.contractId || "New"}`,
             },
           });
         }
@@ -570,7 +614,7 @@ export async function paystackWebhook(req: Request, res: Response) {
               userId: payment.user.id,
               type: "PAYMENT_CONFIRMED",
               title: "Payment Successful",
-              body: `Your payment of ${data.amount / 100} ${data.currency} has been confirmed. Please complete the project questionnaire.`,
+              body: `Your payment has been confirmed. Please complete the project questionnaire.`,
             },
           });
         }
@@ -578,15 +622,15 @@ export async function paystackWebhook(req: Request, res: Response) {
         // 6. Audit log
         await tx.auditLog.create({
           data: {
-            userId: payment.userId || payment.contract!.client.linkedUserId || "system",
+            userId: payment.userId || contractClient?.linkedUserId || "system",
             actionType: "PAYMENT_SUCCESS",
             entityType: "PAYMENT",
             entityId: payment.id,
             metaJson: {
               reference,
-              amount: data.amount / 100,
+              amount: data.amount ? data.amount / 100 : 0,
               channel: data.channel,
-              contractId: payment.contract?.id,
+              contractId: payment.contractId,
             },
           },
         });
