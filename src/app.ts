@@ -15,6 +15,8 @@ app.post("/api/payments/webhook", rawBody, paystackWebhook);
 
 // Normal JSON for everything else
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 
 // All API routes under /api
 app.use("/api", routes);
