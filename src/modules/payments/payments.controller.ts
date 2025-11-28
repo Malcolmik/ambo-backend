@@ -13,14 +13,80 @@ if (!PAYSTACK_SECRET_KEY) {
   console.warn("[PAYSTACK] PAYSTACK_SECRET_KEY is not set in .env");
 }
 
-// Helper: Convert Naira to Kobo
-function nairaToKobo(ngn: number): number {
-  return Math.round(ngn * 100);
+// --- CONFIGURATION: Service & Package Definitions ---
+
+// 1. Individual Service Prices (USD) based on AMBO MEDIA Template
+const SERVICE_PRICES: Record<string, number> = {
+  "Content writing.": 150,
+  "Social Media Management": 750,
+  "P-P-C Marketing (SMM & GOOGLE)": 151.5,
+  "Content Marketing": 150,
+  "Branding": 150,
+  "Content Creativity and Production for all SM platforms.": 525,
+  "Email Marketing": 150,
+  "S.E.M (Search Engine Marketing)": 153,
+  "Affiliate Marketing": 162,
+  "Influencer Marketing": 171,
+  "Web Design": 600,
+  "Commercial Shoots/ Promotions": 600,
+  "Community Management": 175,
+  "Competitive Market Analysis.": 150,
+  // Normalized keys (handling slight naming variations in template)
+  "PPC Marketing": 151.5, 
+  "Search Engine Marketing": 153,
+  "Content creativity and Production for all SM platforms": 525,
+  "Account Management (CRM)": 0, // Not priced explicitly in list, assuming part of package or 0
+  "Online Marketing Consultations": 0, // Not priced explicitly
+  "Commercial shoots and Promotions": 600,
+  "Competitive Marketing Analysis": 150
+};
+
+// 2. Package Prices (USD)
+const PACKAGE_PRICES: Record<string, number> = {
+  "AMBO CLASSIC": 2249,
+  "AMBO DELUXE": 2959,
+  "AMBO PREMIUM": 3876
+};
+
+// 3. Package Contents
+const PACKAGE_DEFINITIONS: Record<string, string[]> = {
+  "AMBO CLASSIC": [
+    "PPC Marketing",
+    "Email Marketing",
+    "Content Marketing",
+    "Account Management (CRM)",
+    "Influencer Marketing",
+    "Content creativity and Production for all SM platforms",
+    "Branding",
+    "Online Marketing Consultations",
+    "Search Engine Marketing"
+  ],
+  "AMBO DELUXE": [
+    "PPC Marketing", "Email Marketing", "Content Marketing", "Account Management (CRM)", 
+    "Influencer Marketing", "Content creativity and Production for all SM platforms", 
+    "Branding", "Online Marketing Consultations", "Search Engine Marketing",
+    "Affiliate Marketing",
+    "Community Management",
+    "Web Design"
+  ],
+  "AMBO PREMIUM": [
+    "PPC Marketing", "Email Marketing", "Content Marketing", "Account Management (CRM)", 
+    "Influencer Marketing", "Content creativity and Production for all SM platforms", 
+    "Branding", "Online Marketing Consultations", "Search Engine Marketing",
+    "Affiliate Marketing", "Community Management", "Web Design",
+    "Commercial shoots and Promotions",
+    "Competitive Marketing Analysis"
+  ]
+};
+
+// Helper: Convert Amount to Subunit (Kobo for NGN, Cents for USD)
+function toSubunit(amount: number): number {
+  return Math.round(amount * 100);
 }
 
 /**
  * POST /api/payments/initialize
- * Initialize a Paystack payment for package selection
+ * Initialize a Paystack payment for package selection OR custom services
  */
 export async function initializePayment(req: AuthedRequest, res: Response) {
   try {
@@ -28,17 +94,20 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    const { packageType, amount } = req.body;
+    // Services: Optional array of strings for stand-alone items or add-ons
+    // Currency: Defaults to USD per the template, but can be overridden
+    const { packageType, currency, services = [] } = req.body;
+    const txCurrency = currency || "USD"; 
 
     // Validate required fields
-    if (!packageType || !amount) {
-      return fail(res, "Package type and amount are required", 400);
+    if (!packageType) {
+      return fail(res, "Package type is required", 400);
     }
 
     // Validate package type
-    const validPackages = ["BASIC", "STANDARD", "PREMIUM"];
+    const validPackages = ["AMBO CLASSIC", "AMBO DELUXE", "AMBO PREMIUM", "CUSTOM"];
     if (!validPackages.includes(packageType)) {
-      return fail(res, "Invalid package type", 400);
+      return fail(res, "Invalid package type. Must be AMBO CLASSIC, DELUXE, PREMIUM or CUSTOM.", 400);
     }
 
     // Get client information
@@ -55,9 +124,52 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       return fail(res, "Client not found. Please contact support.", 404);
     }
 
-    const amountNumber = Number(amount);
-    if (isNaN(amountNumber) || amountNumber <= 0) {
-      return fail(res, "Invalid amount", 400);
+    // --- CALCULATE AMOUNT SERVER-SIDE ---
+    let amountNumber = 0;
+    let finalServices: string[] = [];
+
+    if (packageType === "CUSTOM") {
+      // For CUSTOM, we sum up the individual service prices
+      if (!Array.isArray(services) || services.length === 0) {
+        return fail(res, "For CUSTOM packages, at least one service must be selected", 400);
+      }
+      
+      finalServices = services;
+      
+      // Calculate total
+      for (const service of services) {
+        const price = SERVICE_PRICES[service];
+        // If price is undefined, we might have a bad service name. 
+        // For robustness, we log warning and add 0, or you could fail request.
+        if (price !== undefined) {
+          amountNumber += price;
+        } else {
+          console.warn(`Warning: Unknown service '${service}' requested by user ${req.user.id}`);
+        }
+      }
+    } else {
+      // For Standard Packages (Classic, Deluxe, Premium)
+      amountNumber = PACKAGE_PRICES[packageType] || 0;
+      
+      // Merge package services + any extra add-ons sent
+      const defaultServices = PACKAGE_DEFINITIONS[packageType] || [];
+      const serviceSet = new Set([...defaultServices, ...services]);
+      finalServices = Array.from(serviceSet);
+
+      // (Optional) If you want to charge extra for add-ons to a package:
+      if (services.length > 0) {
+         for (const service of services) {
+           // Only add price if it's NOT already in the default package
+           if (!defaultServices.includes(service)) {
+             const price = SERVICE_PRICES[service] || 0;
+             amountNumber += price;
+           }
+         }
+      }
+    }
+
+    if (amountNumber <= 0) {
+      return fail(res, "Calculated amount is invalid (0 or less). Check service selection.", 400);
     }
 
     // Generate unique reference
@@ -66,8 +178,8 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
     // Prepare Paystack initialization data
     const paystackData = {
       email: client.email,
-      amount: amountNumber * 100, // Convert to kobo (Naira minor unit)
-      currency: "NGN",
+      amount: toSubunit(amountNumber), 
+      currency: txCurrency,
       reference: reference,
       callback_url: `${FRONTEND_URL}/payment/callback`,
       metadata: {
@@ -75,6 +187,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
         clientId: client.id,
         userId: req.user.id,
         companyName: client.companyName,
+        services: finalServices, // Store the full list in metadata
       },
     };
 
@@ -97,14 +210,14 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       return fail(res, data.message || "Failed to initialize payment", 400);
     }
 
-    // 1. Create Contract record immediately (so it shows as Pending in UI)
+    // 1. Create Contract record immediately
     const contract = await prisma.contract.create({
       data: {
         clientId: client.id,
         packageType,
-        services: [], // Will be filled based on package or later
+        services: finalServices, // Save the combined list of services
         totalPrice: amountNumber,
-        currency: "NGN",
+        currency: txCurrency,
         paymentStatus: "PENDING",
         status: "AWAITING_PAYMENT",
         paymentRef: reference,
@@ -114,9 +227,9 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
     // 2. Create Payment record linked to Contract
     await prisma.payment.create({
       data: {
-        contractId: contract.id, // Linked!
+        contractId: contract.id,
         amount: amountNumber,
-        currency: "NGN",
+        currency: txCurrency,
         reference: reference,
         status: "PENDING",
         provider: "PAYSTACK",
@@ -124,6 +237,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
           packageType: packageType,
           clientId: client.id,
           userId: req.user.id,
+          services: finalServices
         },
       },
     });
@@ -140,6 +254,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
             reference,
             amount: amountNumber,
             packageType,
+            currency: txCurrency
           },
         },
       });
@@ -196,7 +311,7 @@ export async function initiatePayment(req: AuthedRequest, res: Response) {
       return fail(res, "Client not found", 404);
     }
 
-    const amountKobo = nairaToKobo(amountNumber);
+    const amountKobo = toSubunit(amountNumber);
 
     // Call Paystack Initialize API
     const resp = await axios.post(
@@ -392,7 +507,7 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
 
     return success(res, {
       status: txData.status,
-      amount: txData.amount / 100, // Convert back to Naira
+      amount: txData.amount / 100, // Convert back to major unit
       paidAt: txData.paid_at,
       reference: txData.reference,
     });
@@ -425,16 +540,13 @@ export async function paystackWebhook(req: Request, res: Response) {
       }
     } else if (typeof req.body === 'object') {
         // Fallback for standard express json parser
-        // If it's already an object, we must stringify it for signature verification
-        // NOTE: This might fail if key order differs, hence the fallback API check below is critical
         rawBody = JSON.stringify(req.body);
     }
 
     // Extensive Debug Logging
     console.log("--- WEBHOOK START ---");
-    // console.log("Headers:", JSON.stringify(req.headers)); // Commented out to reduce noise
     
-    // Robust reference extraction (handle different payload structures)
+    // Robust reference extraction
     const reference = event?.data?.reference || event?.reference;
 
     if (!reference) {
@@ -445,7 +557,7 @@ export async function paystackWebhook(req: Request, res: Response) {
     // 2. Verify signature
     const hash = crypto
       .createHmac("sha512", PAYSTACK_SECRET_KEY)
-      .update(rawBody) // Use rawBody (Buffer or String) here
+      .update(rawBody) 
       .digest("hex");
 
     const signature = req.headers["x-paystack-signature"];
@@ -540,11 +652,13 @@ export async function paystackWebhook(req: Request, res: Response) {
             const meta: any = data.metadata || payment.meta || {};
             if (meta.clientId && meta.packageType) {
                 console.log("Creating/Linking contract in webhook for:", reference);
+                const services = PACKAGE_DEFINITIONS[meta.packageType] || meta.services || [];
+                
                 const newContract = await tx.contract.create({
                     data: {
                         clientId: meta.clientId,
                         packageType: meta.packageType,
-                        services: [],
+                        services: services, 
                         totalPrice: data.amount ? data.amount / 100 : 0,
                         currency: data.currency || "NGN",
                         paymentStatus: "PAID",
