@@ -6,14 +6,34 @@ import {
   getClient,
   listClients,
   updateClient,
+  assignClientToWorker,
+  getClients,
 } from "./clients.controller";
 
 const router = Router();
 
-// GET /api/clients - List all clients (authenticated users)
+// 1. General List (Must be first)
+// GET /api/clients
 router.get("/", authRequired, listClients);
 
-// POST /api/clients - Create client (SUPER_ADMIN only)
+// 2. Specific Static Routes (MUST be before /:id)
+// GET /api/clients/all-for-assign
+router.get(
+  "/all-for-assign", 
+  authRequired, 
+  requireRole("SUPER_ADMIN"), 
+  getClients
+);
+
+// POST /api/clients/assign
+router.post(
+  "/assign",
+  authRequired,
+  requireRole("SUPER_ADMIN"),
+  assignClientToWorker
+);
+
+// POST /api/clients (Create)
 router.post(
   "/",
   authRequired,
@@ -21,10 +41,12 @@ router.post(
   createClient
 );
 
-// GET /api/clients/:id - Get specific client (authenticated users)
+// 3. Dynamic Routes (MUST be last)
+// GET /api/clients/:id 
+// (If this was above 'all-for-assign', it would catch 'all-for-assign' as an ID)
 router.get("/:id", authRequired, getClient);
 
-// PATCH /api/clients/:id - Update client (SUPER_ADMIN only)
+// PATCH /api/clients/:id
 router.patch(
   "/:id",
   authRequired,

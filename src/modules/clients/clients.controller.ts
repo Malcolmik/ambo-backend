@@ -57,8 +57,6 @@ export async function createClient(req: AuthedRequest, res: Response) {
     whatsapp,
     status,
     notes,
-    // Note: linkedUserId is usually passed here for immediate linking, 
-    // but the updateClient function below handles the linking later.
     linkedUserId
   } = req.body;
 
@@ -100,17 +98,12 @@ export async function getClient(req: AuthedRequest, res: Response) {
       return fail(res, "Client not found", 404);
     }
 
-    // Basic Authorization Check: SUPER_ADMIN allowed OR linked CLIENT_VIEWER allowed
+    // Basic Authorization Check
     const user = req.user;
     if (user?.role === "CLIENT_VIEWER" && client.linkedUserId !== user.id) {
         return fail(res, "Forbidden", 403);
     }
-    // WORKER authorization is handled by listClients, but for single GET, 
-    // we generally allow it if they are assigned a task (omitting complex check for now)
-    if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "CLIENT_VIEWER")) {
-         // Optionally, add a check for workers being assigned to tasks for this client.
-    }
-
+    
     return success(res, client);
   } catch (err: any) {
     console.error("getClient error:", err);
@@ -121,16 +114,13 @@ export async function getClient(req: AuthedRequest, res: Response) {
 
 // PATCH /clients/:id (SUPER_ADMIN only)
 /**
- * Updates a client record. Used here specifically to link the Client Viewer User ID.
+ * Updates a client record.
  */
 export async function updateClient(req: AuthedRequest, res: Response) {
   const { id } = req.params;
   const updateData = req.body;
 
   try {
-    // Note: Authorization check (requireRole("SUPER_ADMIN")) is expected 
-    // to be handled by the route middleware.
-
     const existingClient = await prisma.client.findUnique({ where: { id } });
     if (!existingClient) {
       return fail(res, "Client not found", 404);
@@ -141,9 +131,6 @@ export async function updateClient(req: AuthedRequest, res: Response) {
       data: updateData,
     });
     
-    // Audit log (recommended)
-    // Wrappped in try/catch just in case AuditLog model doesn't exist or fails, 
-    // so it doesn't block the main update.
     try {
         if (req.user?.id) {
             await prisma.auditLog.create({
@@ -168,4 +155,105 @@ export async function updateClient(req: AuthedRequest, res: Response) {
     console.error("updateClient error:", err);
     return fail(res, "Failed to update client", 500);
   }
+}
+
+/**
+ * POST /api/clients/assign
+ * Assign a client to a worker (Super Admin only)
+ */
+export async function assignClientToWorker(req: AuthedRequest, res: Response) {
+  try {
+    const { clientId, workerId } = req.body;
+
+    if (!clientId || !workerId) {
+      return fail(res, "clientId and workerId are required", 400);
+    }
+
+    if (req.user?.role !== "SUPER_ADMIN") {
+      return fail(res, "Forbidden: Only Super Admins can assign clients", 403);
+    }
+
+    // Check if client exists
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+    });
+
+    if (!client) {
+      return fail(res, "Client not found", 404);
+    }
+
+    // Check if worker exists
+    const worker = await prisma.user.findUnique({
+      where: { id: workerId },
+    });
+
+    if (!worker) {
+      return fail(res, "Worker not found", 404);
+    }
+
+    // Assign by creating a high-priority TASK
+    const assignmentTask = await prisma.task.create({
+      data: {
+        title: `Manage Client: ${client.companyName}`,
+        description: `You have been assigned to manage account operations for ${client.companyName}. Please review their contract and onboard them.`,
+        priority: "HIGH",
+        // status: "PENDING", // REMOVED: Using database default (likely "TODO" or "OPEN") to avoid type mismatch
+        clientId: clientId,
+        assignedToId: workerId,
+        createdById: req.user.id,
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Due in 1 week
+      }
+    });
+
+    // Notification for the worker
+    await prisma.notification.create({
+      data: {
+        userId: workerId,
+        type: "TASK_ASSIGNED",
+        title: "New Client Assignment",
+        body: `You have been assigned to manage ${client.companyName}.`,
+      },
+    });
+
+    // Audit Log
+    try {
+        await prisma.auditLog.create({
+            data: {
+                userId: req.user.id,
+                actionType: "CLIENT_ASSIGNED",
+                entityType: "CLIENT",
+                entityId: clientId,
+                metaJson: { workerId, workerName: worker.name, assignmentTaskId: assignmentTask.id }
+            }
+        });
+    } catch (e) {
+        console.warn("Audit log failed for assignment", e);
+    }
+
+    return success(res, { message: "Client assigned successfully (Task created)", task: assignmentTask });
+
+  } catch (err: any) {
+    console.error("assignClientToWorker error:", err);
+    return fail(res, "Failed to assign client", 500);
+  }
+}
+
+/**
+ * GET /api/clients/all (Helper for dropdowns)
+ * List all clients for assignment
+ */
+export async function getClients(req: AuthedRequest, res: Response) {
+    try {
+        if (req.user?.role !== "SUPER_ADMIN") {
+             return fail(res, "Forbidden", 403);
+        }
+        
+        const clients = await prisma.client.findMany({
+            select: { id: true, companyName: true, email: true, status: true },
+            orderBy: { companyName: 'asc' }
+        });
+        return success(res, clients);
+    } catch (err) {
+        return fail(res, "Failed to fetch clients", 500);
+    }
 }
