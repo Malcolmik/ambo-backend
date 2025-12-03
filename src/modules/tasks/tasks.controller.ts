@@ -712,4 +712,3 @@ export async function completeTask(req: AuthedRequest, res: Response) {
     return fail(res, "Failed to complete task", 500);
   }
 }
-

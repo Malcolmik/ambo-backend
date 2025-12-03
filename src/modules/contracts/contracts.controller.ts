@@ -113,6 +113,7 @@ export async function getAllContracts(req: AuthedRequest, res: Response) {
 /**
  * GET /api/contracts/my
  * Get contracts for the authenticated user (CLIENT_VIEWER or SUPER_ADMIN)
+ * Now includes task/worker information and questionnaire status
  */
 export async function myContracts(req: AuthedRequest, res: Response) {
   try {
@@ -121,44 +122,180 @@ export async function myContracts(req: AuthedRequest, res: Response) {
     }
 
     if (req.user.role === "SUPER_ADMIN") {
-      // Super admin sees all contracts
+      // Super admin sees all contracts with full details
       const contracts = await prisma.contract.findMany({
         include: {
-          client: true,
-          questionnaire: true,
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              contactName: true,
+              email: true,
+            },
+          },
+          questionnaire: {
+            select: {
+              id: true,
+              responses: true,
+              createdAt: true,
+            },
+          },
           payments: {
             orderBy: { createdAt: "desc" },
           },
-        },
+          tasks: {
+            include: {
+              assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+          },
+        } as any,
         orderBy: { createdAt: "desc" },
       });
 
-      return success(res, contracts);
+      // Transform for frontend
+      const transformedContracts = contracts.map((contract: any) => {
+        const taskList = contract.tasks || [];
+        return {
+          ...contract,
+          hasQuestionnaire: !!contract.questionnaire,
+          questionnaireCompletedAt: contract.questionnaire?.createdAt || null,
+          needsQuestionnaire: contract.status === ContractStatus.AWAITING_QUESTIONNAIRE,
+          tasks: taskList.map((task: any) => ({
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            status: task.status,
+            priority: task.priority,
+            dueDate: task.dueDate,
+            assignedWorker: task.assignedTo ? {
+              id: task.assignedTo.id,
+              name: task.assignedTo.name,
+              email: task.assignedTo.email,
+            } : null,
+            createdAt: task.createdAt,
+          })),
+          totalTasks: taskList.length,
+          activeTasks: taskList.filter((t: any) => t.status === "IN_PROGRESS").length,
+          completedTasks: taskList.filter((t: any) => t.status === "DONE").length,
+          hasAssignedWorker: taskList.some((t: any) => t.assignedTo !== null),
+        };
+      });
+
+      return success(res, {
+        contracts: transformedContracts,
+        summary: {
+          total: contracts.length,
+          needingQuestionnaire: contracts.filter((c: any) => c.status === ContractStatus.AWAITING_QUESTIONNAIRE).length,
+          readyForAssignment: contracts.filter((c: any) => c.status === ContractStatus.READY_FOR_ASSIGNMENT).length,
+          inProgress: contracts.filter((c: any) => c.status === ContractStatus.IN_PROGRESS).length,
+        },
+      });
     }
 
     if (req.user.role === "CLIENT_VIEWER") {
-      // Client viewer sees their own contracts
+      // Client viewer sees their own contracts with full details
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
       });
 
       if (!client) {
-        return success(res, []); // No contracts yet
+        return success(res, {
+          contracts: [],
+          summary: {
+            total: 0,
+            needingQuestionnaire: 0,
+            readyForAssignment: 0,
+            inProgress: 0,
+          },
+        }); // No contracts yet
       }
 
       const contracts = await prisma.contract.findMany({
         where: { clientId: client.id },
         include: {
-          client: true,
-          questionnaire: true,
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              contactName: true,
+              email: true,
+            },
+          },
+          questionnaire: {
+            select: {
+              id: true,
+              responses: true,
+              createdAt: true,
+            },
+          },
           payments: {
             orderBy: { createdAt: "desc" },
           },
-        },
+          tasks: {
+            include: {
+              assignedTo: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+            orderBy: {
+              createdAt: "desc",
+            },
+          },
+        } as any,
         orderBy: { createdAt: "desc" },
       });
 
-      return success(res, contracts);
+      // Transform for frontend with questionnaire and task info
+      const transformedContracts = contracts.map((contract: any) => {
+        const taskList = contract.tasks || [];
+        return {
+          ...contract,
+          hasQuestionnaire: !!contract.questionnaire,
+          questionnaireCompletedAt: contract.questionnaire?.createdAt || null,
+          needsQuestionnaire: contract.status === ContractStatus.AWAITING_QUESTIONNAIRE,
+          tasks: taskList.map((task: any) => ({
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            status: task.status,
+            priority: task.priority,
+            dueDate: task.dueDate,
+            assignedWorker: task.assignedTo ? {
+              id: task.assignedTo.id,
+              name: task.assignedTo.name,
+              email: task.assignedTo.email,
+            } : null,
+            createdAt: task.createdAt,
+          })),
+          totalTasks: taskList.length,
+          activeTasks: taskList.filter((t: any) => t.status === "IN_PROGRESS").length,
+          completedTasks: taskList.filter((t: any) => t.status === "DONE").length,
+          hasAssignedWorker: taskList.some((t: any) => t.assignedTo !== null),
+        };
+      });
+
+      return success(res, {
+        contracts: transformedContracts,
+        summary: {
+          total: contracts.length,
+          needingQuestionnaire: contracts.filter((c: any) => c.status === ContractStatus.AWAITING_QUESTIONNAIRE).length,
+          readyForAssignment: contracts.filter((c: any) => c.status === ContractStatus.READY_FOR_ASSIGNMENT).length,
+          inProgress: contracts.filter((c: any) => c.status === ContractStatus.IN_PROGRESS).length,
+        },
+      });
     }
 
     return fail(res, "Forbidden", 403);
@@ -170,7 +307,7 @@ export async function myContracts(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/contracts/:id
- * Get a specific contract with full details
+ * Get a specific contract with full details including tasks/workers
  */
 export async function getContract(req: AuthedRequest, res: Response) {
   try {
@@ -180,7 +317,7 @@ export async function getContract(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    const contract = await prisma.contract.findUnique({
+    const contract: any = await prisma.contract.findUnique({
       where: { id },
       include: {
         client: true,
@@ -188,7 +325,21 @@ export async function getContract(req: AuthedRequest, res: Response) {
         payments: {
           orderBy: { createdAt: "desc" },
         },
-      },
+        tasks: {
+          include: {
+            assignedTo: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            },
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
+      } as any,
     });
 
     if (!contract) {
@@ -208,7 +359,34 @@ export async function getContract(req: AuthedRequest, res: Response) {
       return fail(res, "Forbidden", 403);
     }
 
-    return success(res, contract);
+    // Transform for frontend with questionnaire and task info
+    const taskList = contract.tasks || [];
+    const transformedContract = {
+      ...contract,
+      hasQuestionnaire: !!contract.questionnaire,
+      questionnaireCompletedAt: contract.questionnaire?.createdAt || null,
+      needsQuestionnaire: contract.status === ContractStatus.AWAITING_QUESTIONNAIRE,
+      tasks: taskList.map((task: any) => ({
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        status: task.status,
+        priority: task.priority,
+        dueDate: task.dueDate,
+        assignedWorker: task.assignedTo ? {
+          id: task.assignedTo.id,
+          name: task.assignedTo.name,
+          email: task.assignedTo.email,
+        } : null,
+        createdAt: task.createdAt,
+      })),
+      totalTasks: taskList.length,
+      activeTasks: taskList.filter((t: any) => t.status === "IN_PROGRESS").length,
+      completedTasks: taskList.filter((t: any) => t.status === "DONE").length,
+      hasAssignedWorker: taskList.some((t: any) => t.assignedTo !== null),
+    };
+
+    return success(res, transformedContract);
   } catch (err: any) {
     console.error("getContract error:", err);
     return fail(res, "Failed to retrieve contract", 500);
@@ -307,7 +485,7 @@ export async function updateContractStatus(req: AuthedRequest, res: Response) {
         metaJson: {
           oldStatus: contract.status,
           newStatus: status,
-        },
+        } as any,
       },
     });
 
@@ -345,7 +523,7 @@ export async function getContractChatInfo(req: AuthedRequest, res: Response) {
 
     const role = user.role;
 
-    // 🔐 Authorisation:
+    // 🔒 Authorisation:
     // SUPER_ADMIN: always allowed
     if (role === "CLIENT_VIEWER") {
       // Must be the linked user for this client
