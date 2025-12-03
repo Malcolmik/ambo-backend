@@ -37,7 +37,7 @@ export async function getOverview(req: AuthedRequest, res: Response) {
       prisma.contract.count(),
       prisma.task.count(),
       prisma.task.count({
-        where: { status: { in: ["PENDING", "IN_PROGRESS"] } },
+        where: { status: { in: ["NOT_STARTED", "IN_PROGRESS"] } },
       }),
       prisma.user.count(),
       prisma.user.count({
@@ -204,7 +204,7 @@ export async function getWorkerPerformance(req: AuthedRequest, res: Response) {
         name: true,
         email: true,
         active: true,
-        assignedTasks: {
+        tasksAssigned: {
           select: {
             id: true,
             status: true,
@@ -216,10 +216,10 @@ export async function getWorkerPerformance(req: AuthedRequest, res: Response) {
     });
 
     const workerStats = workers.map((worker) => {
-      const tasks = worker.assignedTasks;
+      const tasks = worker.tasksAssigned;
       const completedTasks = tasks.filter((t) => t.status === "DONE");
       const inProgressTasks = tasks.filter((t) => t.status === "IN_PROGRESS");
-      const pendingTasks = tasks.filter((t) => t.status === "PENDING");
+      const pendingTasks = tasks.filter((t) => t.status === "NOT_STARTED");
 
       // Calculate average completion time (days)
       const completedWithTimes = completedTasks.filter(
