@@ -11,9 +11,12 @@ export async function submitQuestionnaire(req: AuthedRequest, res: Response) {
   try {
     const { contractId, responses } = req.body;
 
-    if (!contractId || !responses) {
-      return fail(res, "contractId and responses are required", 400);
+    if (!contractId) {
+      return fail(res, "contractId is required", 400);
     }
+
+    // Allow empty or partial responses
+    const questionnaireData = responses || {};
 
     // Find contract
     const contract = await prisma.contract.findUnique({
@@ -50,7 +53,7 @@ export async function submitQuestionnaire(req: AuthedRequest, res: Response) {
       const updatedQuestionnaire = await prisma.questionnaire.update({
         where: { contractId },
         data: { 
-          responses,
+          responses: questionnaireData,
         },
       });
       
@@ -69,7 +72,7 @@ export async function submitQuestionnaire(req: AuthedRequest, res: Response) {
     const questionnaire = await prisma.questionnaire.create({
       data: {
         contractId,
-        responses,
+        responses: questionnaireData,
       },
     });
 
@@ -126,9 +129,8 @@ export async function submitQuestionnaireForAll(req: AuthedRequest, res: Respons
   try {
     const { responses } = req.body;
 
-    if (!responses) {
-      return fail(res, "responses are required", 400);
-    }
+    // Allow empty or partial responses
+    const questionnaireData = responses || {};
 
     // Check authorization - must be CLIENT_VIEWER or CLIENT_ADMIN
     if (!req.user || (req.user.role !== "CLIENT_VIEWER" && req.user.role !== "CLIENT_ADMIN" && req.user.role !== "SUPER_ADMIN")) {
@@ -171,7 +173,7 @@ export async function submitQuestionnaireForAll(req: AuthedRequest, res: Respons
           // Update existing
           const updated = await tx.questionnaire.update({
             where: { contractId: contract.id },
-            data: { responses },
+            data: { responses: questionnaireData },
           });
           questionnaires.push(updated);
         } else {
@@ -179,7 +181,7 @@ export async function submitQuestionnaireForAll(req: AuthedRequest, res: Respons
           const created = await tx.questionnaire.create({
             data: {
               contractId: contract.id,
-              responses,
+              responses: questionnaireData,
             },
           });
           questionnaires.push(created);
