@@ -1,19 +1,33 @@
 import { Router } from "express";
 import {
   listTasks,
+  getMyTasks,
   getTask,
   createTask,
   updateTask,
-  updateTaskStatus, // optional if you're keeping both endpoints
+  updateTaskStatus,
+  acceptTask,
+  declineTask,
+  completeTask,
 } from "./tasks.controller";
 import { authRequired } from "../../middleware/auth";
 import { requireRole } from "../../middleware/requireRole";
 
 const router = Router();
 
+// Specific worker routes (MUST come before /:id routes)
+router.get("/my", authRequired, getMyTasks); // Get worker's assigned tasks
+router.post("/:taskId/accept", authRequired, acceptTask); // Worker accepts task
+router.post("/:taskId/decline", authRequired, declineTask); // Worker declines task
+router.post("/:taskId/complete", authRequired, completeTask); // Worker completes task
+
+// List tasks (role-based)
 router.get("/", authRequired, listTasks);
+
+// Get single task
 router.get("/:id", authRequired, getTask);
 
+// Create task (admin only)
 router.post(
   "/",
   authRequired,
@@ -21,18 +35,10 @@ router.post(
   createTask
 );
 
-// generic task edit (title, description, priority, dueDate, assignee, status)
-router.patch(
-  "/:id",
-  authRequired,
-  updateTask
-);
+// Update task (general)
+router.patch("/:id", authRequired, updateTask);
 
-// legacy status-only update (can keep or remove)
-router.patch(
-  "/:id/status",
-  authRequired,
-  updateTaskStatus
-);
+// Update task status (legacy - can keep or remove)
+router.patch("/:id/status", authRequired, updateTaskStatus);
 
 export default router;

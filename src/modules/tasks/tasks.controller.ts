@@ -60,6 +60,62 @@ export async function listTasks(req: AuthedRequest, res: Response) {
 }
 
 /**
+ * GET /tasks/my
+ * Get all tasks assigned to the logged-in worker
+ * Query params: ?status=NOT_STARTED (optional)
+ */
+export async function getMyTasks(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) return fail(res, "Unauthorized", 401);
+
+    // Only workers can access this endpoint
+    if (req.user.role !== "WORKER") {
+      return fail(res, "Only workers can access this endpoint", 403);
+    }
+
+    const { status } = req.query;
+
+    const where: any = {
+      assignedToId: req.user.id,
+    };
+
+    if (status) {
+      where.status = status;
+    }
+
+    const tasks = await prisma.task.findMany({
+      where,
+      include: {
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+            email: true,
+          },
+        },
+        assignedTo: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+      orderBy: [
+        { priority: "desc" },
+        { dueDate: "asc" },
+        { createdAt: "desc" },
+      ],
+    });
+
+    return success(res, tasks);
+  } catch (err: any) {
+    console.error("getMyTasks error:", err);
+    return fail(res, "Failed to fetch tasks", 500);
+  }
+}
+
+/**
  * GET /tasks/:id
  * Role-aware single fetch
  */
@@ -177,6 +233,7 @@ export async function createTask(req: AuthedRequest, res: Response) {
     return fail(res, "Task creation failed", 500);
   }
 }
+
 /**
  * PATCH /tasks/:id
  * General update to fields on a task.
@@ -336,3 +393,323 @@ export async function updateTaskStatus(req: AuthedRequest, res: Response) {
 
   return success(res, updatedTask);
 }
+
+/**
+ * POST /tasks/:taskId/accept
+ * Worker accepts an assigned task
+ */
+export async function acceptTask(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) return fail(res, "Unauthorized", 401);
+
+    if (req.user.role !== "WORKER") {
+      return fail(res, "Only workers can accept tasks", 403);
+    }
+
+    const { taskId } = req.params;
+
+    // Find the task
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      include: {
+        client: { include: { linkedUser: true } },
+        assignedTo: true,
+      },
+    });
+
+    if (!task) {
+      return fail(res, "Task not found", 404);
+    }
+
+    // Verify the task is assigned to this worker
+    if (task.assignedToId !== req.user.id) {
+      return fail(res, "This task is not assigned to you", 403);
+    }
+
+    // Verify task is in correct status
+    if (task.status !== "NOT_STARTED") {
+      return fail(res, `Task is already in ${task.status} status`, 400);
+    }
+
+    // Update task status
+    const updatedTask = await prisma.task.update({
+      where: { id: taskId },
+      data: {
+        status: "IN_PROGRESS",
+        updatedAt: new Date(),
+      },
+      include: {
+        client: true,
+        assignedTo: true,
+      },
+    });
+
+    // Notify client
+    if (task.client?.linkedUser) {
+      await prisma.notification.create({
+        data: {
+          userId: task.client.linkedUser.id,
+          type: "TASK_ACCEPTED",
+          title: "Task Accepted",
+          body: `${task.assignedTo?.name || 'A worker'} has accepted your task: ${task.title}`,
+        },
+      });
+    }
+
+    // Notify admin
+    const admins = await prisma.user.findMany({
+      where: { role: "SUPER_ADMIN", active: true },
+      select: { id: true },
+    });
+
+    for (const admin of admins) {
+      await prisma.notification.create({
+        data: {
+          userId: admin.id,
+          type: "TASK_ACCEPTED",
+          title: "Task Accepted",
+          body: `${task.assignedTo?.name || 'Worker'} accepted task: ${task.title}${task.client ? ` for ${task.client.companyName}` : ''}`,
+        },
+      });
+    }
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        actionType: "TASK_ACCEPTED",
+        entityType: "TASK",
+        entityId: taskId,
+        metaJson: {
+          taskTitle: task.title,
+          clientId: task.clientId || null,
+        } as any,
+      },
+    });
+
+    return success(res, {
+      task: updatedTask,
+      message: "Task accepted successfully",
+    });
+  } catch (err: any) {
+    console.error("acceptTask error:", err);
+    return fail(res, "Failed to accept task", 500);
+  }
+}
+
+/**
+ * POST /tasks/:taskId/decline
+ * Worker declines an assigned task
+ * Body: { reason: string }
+ */
+export async function declineTask(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) return fail(res, "Unauthorized", 401);
+
+    if (req.user.role !== "WORKER") {
+      return fail(res, "Only workers can decline tasks", 403);
+    }
+
+    const { taskId } = req.params;
+    const { reason } = req.body;
+
+    if (!reason || !reason.trim()) {
+      return fail(res, "Decline reason is required", 400);
+    }
+
+    // Find the task
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      include: {
+        client: true,
+        assignedTo: true,
+      },
+    });
+
+    if (!task) {
+      return fail(res, "Task not found", 404);
+    }
+
+    // Verify the task is assigned to this worker
+    if (task.assignedToId !== req.user.id) {
+      return fail(res, "This task is not assigned to you", 403);
+    }
+
+    // Update task - set assignedTo to null and add decline reason in meta
+    const taskWithMeta = task as any;
+    const currentMeta = (taskWithMeta.meta as Record<string, any>) || {};
+    const updatedTask = await prisma.task.update({
+      where: { id: taskId },
+      data: {
+        assignedToId: null, // Unassign the worker
+        meta: {
+          ...currentMeta,
+          declined: true,
+          declinedBy: req.user.id,
+          declinedByName: req.user.name,
+          declineReason: reason,
+          declinedAt: new Date().toISOString(),
+        },
+        updatedAt: new Date(),
+      } as any,
+      include: {
+        client: true,
+      },
+    });
+
+    // Notify all admins about the decline
+    const admins = await prisma.user.findMany({
+      where: { role: "SUPER_ADMIN", active: true },
+      select: { id: true },
+    });
+
+    for (const admin of admins) {
+      await prisma.notification.create({
+        data: {
+          userId: admin.id,
+          type: "TASK_DECLINED",
+          title: "Task Declined - Action Required",
+          body: `${task.assignedTo?.name || 'Worker'} declined task: ${task.title}${task.client ? ` for ${task.client.companyName}` : ''}. Reason: ${reason}`,
+        },
+      });
+    }
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        actionType: "TASK_DECLINED",
+        entityType: "TASK",
+        entityId: taskId,
+        metaJson: {
+          taskTitle: task.title,
+          clientId: task.clientId || null,
+          reason,
+        } as any,
+      },
+    });
+
+    return success(res, {
+      task: updatedTask,
+      message: "Task declined. Admin has been notified.",
+    });
+  } catch (err: any) {
+    console.error("declineTask error:", err);
+    return fail(res, "Failed to decline task", 500);
+  }
+}
+
+/**
+ * POST /tasks/:taskId/complete
+ * Worker marks task as complete
+ * Body: { notes?: string }
+ */
+export async function completeTask(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) return fail(res, "Unauthorized", 401);
+
+    if (req.user.role !== "WORKER") {
+      return fail(res, "Only workers can complete tasks", 403);
+    }
+
+    const { taskId } = req.params;
+    const { notes } = req.body;
+
+    // Find the task
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      include: {
+        client: { include: { linkedUser: true } },
+        assignedTo: true,
+      },
+    });
+
+    if (!task) {
+      return fail(res, "Task not found", 404);
+    }
+
+    // Verify the task is assigned to this worker
+    if (task.assignedToId !== req.user.id) {
+      return fail(res, "This task is not assigned to you", 403);
+    }
+
+    // Verify task is in progress
+    if (task.status !== "IN_PROGRESS" && task.status !== "WAITING") {
+      return fail(res, `Task must be IN_PROGRESS to mark as complete (currently ${task.status})`, 400);
+    }
+
+    // Update task status
+    const taskWithMeta = task as any;
+    const currentMeta = (taskWithMeta.meta as Record<string, any>) || {};
+    const updatedTask = await prisma.task.update({
+      where: { id: taskId },
+      data: {
+        status: "DONE",
+        meta: {
+          ...currentMeta,
+          completionNotes: notes || "",
+          completedAt: new Date().toISOString(),
+          completedBy: req.user.id,
+        },
+        updatedAt: new Date(),
+      } as any,
+      include: {
+        client: true,
+        assignedTo: true,
+      },
+    });
+
+    // Notify client
+    if (task.client?.linkedUser) {
+      await prisma.notification.create({
+        data: {
+          userId: task.client.linkedUser.id,
+          type: "TASK_COMPLETED",
+          title: "Task Completed",
+          body: `${task.assignedTo?.name || 'Your worker'} completed your task: ${task.title}${notes ? `. Notes: ${notes}` : ""}`,
+        },
+      });
+    }
+
+    // Notify admin
+    const admins = await prisma.user.findMany({
+      where: { role: "SUPER_ADMIN", active: true },
+      select: { id: true },
+    });
+
+    for (const admin of admins) {
+      await prisma.notification.create({
+        data: {
+          userId: admin.id,
+          type: "TASK_COMPLETED",
+          title: "Task Completed",
+          body: `${task.assignedTo?.name || 'Worker'} completed task: ${task.title}${task.client ? ` for ${task.client.companyName}` : ''}`,
+        },
+      });
+    }
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        actionType: "TASK_COMPLETED",
+        entityType: "TASK",
+        entityId: taskId,
+        metaJson: {
+          taskTitle: task.title,
+          clientId: task.clientId || null,
+          notes: notes || "",
+        } as any,
+      },
+    });
+
+    return success(res, {
+      task: updatedTask,
+      message: "Task marked as complete. Client and admin have been notified.",
+    });
+  } catch (err: any) {
+    console.error("completeTask error:", err);
+    return fail(res, "Failed to complete task", 500);
+  }
+}
+

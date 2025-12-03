@@ -107,13 +107,132 @@ export async function submitQuestionnaire(req: AuthedRequest, res: Response) {
         entityId: contractId,
         metaJson: {
           questionnaireId: questionnaire.id,
-        },
+        } as any,
       },
     });
 
     return success(res, questionnaire, 201);
   } catch (err: any) {
     console.error("submitQuestionnaire error:", err);
+    return fail(res, "Failed to submit questionnaire", 500);
+  }
+}
+
+/**
+ * POST /api/questionnaire/submit-all
+ * Submit questionnaire for ALL client's contracts with AWAITING_QUESTIONNAIRE status
+ */
+export async function submitQuestionnaireForAll(req: AuthedRequest, res: Response) {
+  try {
+    const { responses } = req.body;
+
+    if (!responses) {
+      return fail(res, "responses are required", 400);
+    }
+
+    // Check authorization - must be CLIENT_VIEWER or CLIENT_ADMIN
+    if (!req.user || (req.user.role !== "CLIENT_VIEWER" && req.user.role !== "CLIENT_ADMIN" && req.user.role !== "SUPER_ADMIN")) {
+      return fail(res, "Forbidden: Only clients can submit questionnaires", 403);
+    }
+
+    // Find client linked to this user
+    const client = await prisma.client.findFirst({
+      where: { linkedUserId: req.user.id },
+      include: { contracts: true },
+    });
+
+    if (!client) {
+      return fail(res, "Client not found for this user", 404);
+    }
+
+    // Find all contracts awaiting questionnaire
+    const awaitingContracts = await prisma.contract.findMany({
+      where: {
+        clientId: client.id,
+        status: "AWAITING_QUESTIONNAIRE",
+      },
+    });
+
+    if (awaitingContracts.length === 0) {
+      return fail(res, "No contracts awaiting questionnaire", 404);
+    }
+
+    // Use transaction to create questionnaires for all contracts
+    const result = await prisma.$transaction(async (tx) => {
+      const questionnaires = [];
+
+      for (const contract of awaitingContracts) {
+        // Check if questionnaire already exists
+        const existing = await tx.questionnaire.findUnique({
+          where: { contractId: contract.id },
+        });
+
+        if (existing) {
+          // Update existing
+          const updated = await tx.questionnaire.update({
+            where: { contractId: contract.id },
+            data: { responses },
+          });
+          questionnaires.push(updated);
+        } else {
+          // Create new
+          const created = await tx.questionnaire.create({
+            data: {
+              contractId: contract.id,
+              responses,
+            },
+          });
+          questionnaires.push(created);
+        }
+
+        // Update contract status
+        await tx.contract.update({
+          where: { id: contract.id },
+          data: { status: "READY_FOR_ASSIGNMENT" },
+        });
+      }
+
+      // Notify super admins (single notification for all)
+      const superAdmins = await tx.user.findMany({
+        where: { role: "SUPER_ADMIN", active: true },
+        select: { id: true },
+      });
+
+      for (const admin of superAdmins) {
+        await tx.notification.create({
+          data: {
+            userId: admin.id,
+            type: "QUESTIONNAIRE_SUBMITTED",
+            title: "Questionnaires Submitted",
+            body: `${client.companyName} has submitted questionnaire for ${awaitingContracts.length} contract(s).`,
+          },
+        });
+      }
+
+      // Audit log
+      await tx.auditLog.create({
+        data: {
+          userId: req.user!.id,
+          actionType: "QUESTIONNAIRE_SUBMITTED",
+          entityType: "CONTRACT",
+          entityId: questionnaires[0].id,
+          metaJson: {
+            contractIds: awaitingContracts.map((c) => c.id),
+            count: awaitingContracts.length,
+          } as any,
+        },
+      });
+
+      return questionnaires;
+    });
+
+    return success(res, {
+      questionnaires: result,
+      count: result.length,
+      message: `Questionnaire submitted for ${result.length} contract(s)`,
+    }, 201);
+  } catch (err: any) {
+    console.error("submitQuestionnaireForAll error:", err);
     return fail(res, "Failed to submit questionnaire", 500);
   }
 }
