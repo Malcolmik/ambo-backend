@@ -316,25 +316,46 @@ export async function getMyQuestionnaires(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    if (req.user.role !== "WORKER") {
-      return fail(res, "Forbidden: Only workers can access this endpoint", 403);
+    if (req.user.role !== "WORKER" && req.user.role !== "SUPER_ADMIN") {
+      return fail(res, "Forbidden: Only workers and admins can access this endpoint", 403);
     }
 
-    // Get all tasks assigned to this worker
-    const tasks = await prisma.task.findMany({
-      where: { assignedToId: req.user.id },
-      include: {
-        client: {
-          include: {
-            contracts: {
-              include: {
-                questionnaire: true,
+    // If SUPER_ADMIN, get all clients
+    // If WORKER, get only assigned clients
+    let tasks;
+    
+    if (req.user.role === "SUPER_ADMIN") {
+      // Get all tasks for all clients
+      tasks = await prisma.task.findMany({
+        include: {
+          client: {
+            include: {
+              contracts: {
+                include: {
+                  questionnaire: true,
+                },
               },
             },
           },
         },
-      },
-    });
+      });
+    } else {
+      // Get only tasks assigned to this worker
+      tasks = await prisma.task.findMany({
+        where: { assignedToId: req.user.id },
+        include: {
+          client: {
+            include: {
+              contracts: {
+                include: {
+                  questionnaire: true,
+                },
+              },
+            },
+          },
+        },
+      });
+    }
 
     // Extract unique clients and their questionnaires
     const clientQuestionnaires = new Map();
