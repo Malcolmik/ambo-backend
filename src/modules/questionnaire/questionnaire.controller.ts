@@ -305,3 +305,80 @@ export async function getQuestionnaire(req: AuthedRequest, res: Response) {
     return fail(res, "Failed to retrieve questionnaire", 500);
   }
 }
+
+/**
+ * GET /api/questionnaire/my
+ * Get all questionnaires for workers' assigned clients
+ */
+export async function getMyQuestionnaires(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    if (req.user.role !== "WORKER") {
+      return fail(res, "Forbidden: Only workers can access this endpoint", 403);
+    }
+
+    // Get all tasks assigned to this worker
+    const tasks = await prisma.task.findMany({
+      where: { assignedToId: req.user.id },
+      include: {
+        client: {
+          include: {
+            contracts: {
+              include: {
+                questionnaire: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Extract unique clients and their questionnaires
+    const clientQuestionnaires = new Map();
+
+    for (const task of tasks) {
+      if (!task.client) continue;
+
+      const clientId = task.client.id;
+      
+      if (!clientQuestionnaires.has(clientId)) {
+        const questionnaires = task.client.contracts
+          .filter((c: any) => c.questionnaire)
+          .map((c: any) => ({
+            id: c.questionnaire.id,
+            contractId: c.id,
+            packageType: c.packageType,
+            responses: c.questionnaire.responses,
+            createdAt: c.questionnaire.createdAt,
+            updatedAt: c.questionnaire.updatedAt,
+          }));
+
+        clientQuestionnaires.set(clientId, {
+          clientId: task.client.id,
+          clientName: task.client.companyName,
+          clientEmail: task.client.email,
+          questionnaires,
+          myTasks: tasks.filter((t) => t.clientId === clientId).map((t) => ({
+            id: t.id,
+            title: t.title,
+            status: t.status,
+          })),
+        });
+      }
+    }
+
+    const result = Array.from(clientQuestionnaires.values());
+
+    return success(res, {
+      clients: result,
+      totalClients: result.length,
+      totalQuestionnaires: result.reduce((sum: number, c: any) => sum + c.questionnaires.length, 0),
+    });
+  } catch (err: any) {
+    console.error("getMyQuestionnaires error:", err);
+    return fail(res, "Failed to retrieve questionnaires", 500);
+  }
+}

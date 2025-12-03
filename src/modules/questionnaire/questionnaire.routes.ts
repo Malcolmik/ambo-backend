@@ -1,11 +1,12 @@
 import { Router } from "express";
-import { submitQuestionnaire, submitQuestionnaireForAll, getQuestionnaire } from "./questionnaire.controller";
+import { submitQuestionnaire, submitQuestionnaireForAll, getQuestionnaire, getMyQuestionnaires } from "./questionnaire.controller";
 import { authRequired } from "../../middleware/auth";
 
 const router = Router();
 
-// IMPORTANT: /submit-all must come BEFORE / or it won't match
+// IMPORTANT: Specific routes must come BEFORE parameterized routes
 router.post("/submit-all", authRequired, submitQuestionnaireForAll);
+router.get("/my", authRequired, getMyQuestionnaires); // Workers get their questionnaires
 router.post("/", authRequired, submitQuestionnaire);
 router.get("/:contractId", authRequired, getQuestionnaire);
 
