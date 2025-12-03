@@ -4,31 +4,35 @@ import { AuthedRequest } from "../../middleware/auth";
 import { success, fail } from "../../utils/response";
 
 /**
- * GET /api/notifications
- * Get notifications for the authenticated user
+ * GET /api/notifications/my
+ * Get all notifications for the authenticated user
  */
-export async function listNotifications(req: AuthedRequest, res: Response) {
+export async function getMyNotifications(req: AuthedRequest, res: Response) {
   try {
     if (!req.user) {
       return fail(res, "Unauthorized", 401);
     }
 
-    const { unreadOnly } = req.query;
-
     const notifications = await prisma.notification.findMany({
-      where: {
-        userId: req.user.id,
-        ...(unreadOnly === "true" ? { readAt: null } : {}),
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: 50, // Limit to last 50 notifications
+      where: { userId: req.user.id },
+      orderBy: { createdAt: "desc" },
+      take: 100, // Last 100 notifications
     });
 
-    return success(res, notifications);
+    const unreadCount = await prisma.notification.count({
+      where: {
+        userId: req.user.id,
+        read: false,
+      },
+    });
+
+    return success(res, {
+      notifications,
+      unreadCount,
+      total: notifications.length,
+    });
   } catch (err: any) {
-    console.error("listNotifications error:", err);
+    console.error("getMyNotifications error:", err);
     return fail(res, "Failed to retrieve notifications", 500);
   }
 }
@@ -45,7 +49,7 @@ export async function markAsRead(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    // Check notification exists and belongs to user
+    // Check ownership
     const notification = await prisma.notification.findUnique({
       where: { id },
     });
@@ -58,12 +62,9 @@ export async function markAsRead(req: AuthedRequest, res: Response) {
       return fail(res, "Forbidden", 403);
     }
 
-    // Mark as read
     const updated = await prisma.notification.update({
       where: { id },
-      data: {
-        readAt: new Date(),
-      },
+      data: { read: true },
     });
 
     return success(res, updated);
@@ -83,17 +84,18 @@ export async function markAllAsRead(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    await prisma.notification.updateMany({
+    const result = await prisma.notification.updateMany({
       where: {
         userId: req.user.id,
-        readAt: null,
+        read: false,
       },
-      data: {
-        readAt: new Date(),
-      },
+      data: { read: true },
     });
 
-    return success(res, { message: "All notifications marked as read" });
+    return success(res, {
+      message: `Marked ${result.count} notifications as read`,
+      count: result.count,
+    });
   } catch (err: any) {
     console.error("markAllAsRead error:", err);
     return fail(res, "Failed to mark all notifications as read", 500);
@@ -101,25 +103,61 @@ export async function markAllAsRead(req: AuthedRequest, res: Response) {
 }
 
 /**
- * GET /api/notifications/unread-count
- * Get count of unread notifications
+ * DELETE /api/notifications/:id
+ * Delete a notification
  */
-export async function getUnreadCount(req: AuthedRequest, res: Response) {
+export async function deleteNotification(req: AuthedRequest, res: Response) {
+  try {
+    const { id } = req.params;
+
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    // Check ownership
+    const notification = await prisma.notification.findUnique({
+      where: { id },
+    });
+
+    if (!notification) {
+      return fail(res, "Notification not found", 404);
+    }
+
+    if (notification.userId !== req.user.id) {
+      return fail(res, "Forbidden", 403);
+    }
+
+    await prisma.notification.delete({
+      where: { id },
+    });
+
+    return success(res, { message: "Notification deleted successfully" });
+  } catch (err: any) {
+    console.error("deleteNotification error:", err);
+    return fail(res, "Failed to delete notification", 500);
+  }
+}
+
+/**
+ * DELETE /api/notifications/clear-all
+ * Delete all notifications for the authenticated user
+ */
+export async function clearAllNotifications(req: AuthedRequest, res: Response) {
   try {
     if (!req.user) {
       return fail(res, "Unauthorized", 401);
     }
 
-    const count = await prisma.notification.count({
-      where: {
-        userId: req.user.id,
-        readAt: null,
-      },
+    const result = await prisma.notification.deleteMany({
+      where: { userId: req.user.id },
     });
 
-    return success(res, { count });
+    return success(res, {
+      message: `Deleted ${result.count} notifications`,
+      count: result.count,
+    });
   } catch (err: any) {
-    console.error("getUnreadCount error:", err);
-    return fail(res, "Failed to get unread count", 500);
+    console.error("clearAllNotifications error:", err);
+    return fail(res, "Failed to clear notifications", 500);
   }
 }

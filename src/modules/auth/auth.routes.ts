@@ -9,6 +9,11 @@ import {
   getCurrentUser,
   changePassword,
 } from "./auth.controller";
+import {
+  forgotPassword,
+  resetPassword,
+  verifyResetToken,
+} from "./password-reset.controller";
 
 const router = Router();
 
@@ -39,5 +44,10 @@ router.get("/me", authRequired, getCurrentUser);
 
 // POST /api/auth/change-password - Change password (authenticated users)
 router.post("/change-password", authRequired, changePassword);
+
+// Password reset endpoints (public)
+router.post("/forgot-password", forgotPassword);
+router.post("/verify-reset-token", verifyResetToken);
+router.post("/reset-password", resetPassword);
 
 export default router;
