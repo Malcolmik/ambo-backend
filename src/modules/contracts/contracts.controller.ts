@@ -129,7 +129,6 @@ export async function myContracts(req: AuthedRequest, res: Response) {
             select: {
               id: true,
               companyName: true,
-              contactName: true,
               email: true,
             },
           },
@@ -143,33 +142,36 @@ export async function myContracts(req: AuthedRequest, res: Response) {
           payments: {
             orderBy: { createdAt: "desc" },
           },
-          tasks: {
-            include: {
-              assignedTo: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
-              },
-            },
-            orderBy: {
-              createdAt: "desc",
-            },
-          },
-        } as any,
+        },
         orderBy: { createdAt: "desc" },
       });
 
+      // Get tasks for all clients
+      const clientIds = contracts.map((c: any) => c.clientId).filter(Boolean);
+      const allTasks = clientIds.length > 0 ? await prisma.task.findMany({
+        where: { clientId: { in: clientIds } },
+        include: {
+          assignedTo: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      }) : [];
+
       // Transform for frontend
       const transformedContracts = contracts.map((contract: any) => {
-        const taskList = contract.tasks || [];
+        const contractTasks = allTasks.filter((t: any) => t.clientId === contract.clientId);
+        
         return {
           ...contract,
           hasQuestionnaire: !!contract.questionnaire,
           questionnaireCompletedAt: contract.questionnaire?.createdAt || null,
           needsQuestionnaire: contract.status === ContractStatus.AWAITING_QUESTIONNAIRE,
-          tasks: taskList.map((task: any) => ({
+          tasks: contractTasks.map((task: any) => ({
             id: task.id,
             title: task.title,
             description: task.description,
@@ -183,10 +185,10 @@ export async function myContracts(req: AuthedRequest, res: Response) {
             } : null,
             createdAt: task.createdAt,
           })),
-          totalTasks: taskList.length,
-          activeTasks: taskList.filter((t: any) => t.status === "IN_PROGRESS").length,
-          completedTasks: taskList.filter((t: any) => t.status === "DONE").length,
-          hasAssignedWorker: taskList.some((t: any) => t.assignedTo !== null),
+          totalTasks: contractTasks.length,
+          activeTasks: contractTasks.filter((t: any) => t.status === "IN_PROGRESS").length,
+          completedTasks: contractTasks.filter((t: any) => t.status === "DONE").length,
+          hasAssignedWorker: contractTasks.some((t: any) => t.assignedTo !== null),
         };
       });
 
@@ -216,7 +218,7 @@ export async function myContracts(req: AuthedRequest, res: Response) {
             readyForAssignment: 0,
             inProgress: 0,
           },
-        }); // No contracts yet
+        });
       }
 
       const contracts = await prisma.contract.findMany({
@@ -226,7 +228,6 @@ export async function myContracts(req: AuthedRequest, res: Response) {
             select: {
               id: true,
               companyName: true,
-              contactName: true,
               email: true,
             },
           },
@@ -240,33 +241,33 @@ export async function myContracts(req: AuthedRequest, res: Response) {
           payments: {
             orderBy: { createdAt: "desc" },
           },
-          tasks: {
-            include: {
-              assignedTo: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
-              },
-            },
-            orderBy: {
-              createdAt: "desc",
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      // Get tasks for this client
+      const clientTasks = await prisma.task.findMany({
+        where: { clientId: client.id },
+        include: {
+          assignedTo: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
             },
           },
-        } as any,
+        },
         orderBy: { createdAt: "desc" },
       });
 
       // Transform for frontend with questionnaire and task info
       const transformedContracts = contracts.map((contract: any) => {
-        const taskList = contract.tasks || [];
         return {
           ...contract,
           hasQuestionnaire: !!contract.questionnaire,
           questionnaireCompletedAt: contract.questionnaire?.createdAt || null,
           needsQuestionnaire: contract.status === ContractStatus.AWAITING_QUESTIONNAIRE,
-          tasks: taskList.map((task: any) => ({
+          tasks: clientTasks.map((task: any) => ({
             id: task.id,
             title: task.title,
             description: task.description,
@@ -280,10 +281,10 @@ export async function myContracts(req: AuthedRequest, res: Response) {
             } : null,
             createdAt: task.createdAt,
           })),
-          totalTasks: taskList.length,
-          activeTasks: taskList.filter((t: any) => t.status === "IN_PROGRESS").length,
-          completedTasks: taskList.filter((t: any) => t.status === "DONE").length,
-          hasAssignedWorker: taskList.some((t: any) => t.assignedTo !== null),
+          totalTasks: clientTasks.length,
+          activeTasks: clientTasks.filter((t: any) => t.status === "IN_PROGRESS").length,
+          completedTasks: clientTasks.filter((t: any) => t.status === "DONE").length,
+          hasAssignedWorker: clientTasks.some((t: any) => t.assignedTo !== null),
         };
       });
 
@@ -307,7 +308,7 @@ export async function myContracts(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/contracts/:id
- * Get a specific contract with full details including tasks/workers
+ * Get a specific contract with full details
  */
 export async function getContract(req: AuthedRequest, res: Response) {
   try {
@@ -317,7 +318,7 @@ export async function getContract(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    const contract: any = await prisma.contract.findUnique({
+    const contract = await prisma.contract.findUnique({
       where: { id },
       include: {
         client: true,
@@ -325,21 +326,7 @@ export async function getContract(req: AuthedRequest, res: Response) {
         payments: {
           orderBy: { createdAt: "desc" },
         },
-        tasks: {
-          include: {
-            assignedTo: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-              },
-            },
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-        },
-      } as any,
+      },
     });
 
     if (!contract) {
@@ -359,34 +346,7 @@ export async function getContract(req: AuthedRequest, res: Response) {
       return fail(res, "Forbidden", 403);
     }
 
-    // Transform for frontend with questionnaire and task info
-    const taskList = contract.tasks || [];
-    const transformedContract = {
-      ...contract,
-      hasQuestionnaire: !!contract.questionnaire,
-      questionnaireCompletedAt: contract.questionnaire?.createdAt || null,
-      needsQuestionnaire: contract.status === ContractStatus.AWAITING_QUESTIONNAIRE,
-      tasks: taskList.map((task: any) => ({
-        id: task.id,
-        title: task.title,
-        description: task.description,
-        status: task.status,
-        priority: task.priority,
-        dueDate: task.dueDate,
-        assignedWorker: task.assignedTo ? {
-          id: task.assignedTo.id,
-          name: task.assignedTo.name,
-          email: task.assignedTo.email,
-        } : null,
-        createdAt: task.createdAt,
-      })),
-      totalTasks: taskList.length,
-      activeTasks: taskList.filter((t: any) => t.status === "IN_PROGRESS").length,
-      completedTasks: taskList.filter((t: any) => t.status === "DONE").length,
-      hasAssignedWorker: taskList.some((t: any) => t.assignedTo !== null),
-    };
-
-    return success(res, transformedContract);
+    return success(res, contract);
   } catch (err: any) {
     console.error("getContract error:", err);
     return fail(res, "Failed to retrieve contract", 500);
@@ -513,7 +473,7 @@ export async function getContractChatInfo(req: AuthedRequest, res: Response) {
       include: {
         client: {
           include: {
-            linkedUser: true, // assuming this relation exists: Client.linkedUserId -> User
+            linkedUser: true,
           },
         },
       },
@@ -666,11 +626,8 @@ export async function sendbirdSyncUser(req: AuthedRequest, res: Response) {
       return fail(res, "User not found", 404);
     }
 
-    // This helper should already be imported at the top of this file
-    // and used in getContractChatInfo
     await ensureSendbirdUser({
       id: user.id,
-      // Use nullish coalescing to provide a fallback nickname if name is null
       name: user.name ?? user.email ?? "AMBO User",
       email: user.email,
     });
