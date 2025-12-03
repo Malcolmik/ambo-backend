@@ -228,7 +228,6 @@ export async function exportPayments(req: AuthedRequest, res: Response) {
       amount: payment.amount,
       currency: payment.currency,
       status: payment.status,
-      paystackReference: payment.paystackReference,
       paidAt: payment.paidAt,
       createdAt: payment.createdAt,
     }));
