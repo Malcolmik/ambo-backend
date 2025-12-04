@@ -40,7 +40,7 @@ export async function forgotPassword(req: Request, res: Response) {
     });
 
     // LOGGING CODE 
-    const frontendUrl = process.env.FRONTEND_URL || "https://ambo-ops.hub.lovable.app";
+    const frontendUrl = process.env.FRONTEND_URL || "https://ambo-dash.lovable.app";
     const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     console.log("═══════════════════════════════════════");
