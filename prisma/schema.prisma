@@ -88,6 +88,9 @@ model User {
   payments         Payment[]
   notifications    Notification[]
   files            File[]
+
+  workerChats      ChatChannel[] @relation("WorkerChats")
+  messages         Message[]
 }
 
 model Client {
@@ -109,6 +112,8 @@ model Client {
   // Relations
   tasks          Task[]
   contracts      Contract[]
+
+  chatChannels   ChatChannel[]
 }
 
 model Contract {
@@ -285,4 +290,43 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([userId])
+}
+model ChatChannel {
+  id          String    @id @default(cuid())
+  clientId    String
+  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  workerId    String?
+  worker      User?     @relation("WorkerChats", fields: [workerId], references: [id], onDelete: SetNull)
+  
+  lastMessageAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  messages    Message[]
+  
+  @@unique([clientId, workerId])
+  @@index([clientId])
+  @@index([workerId])
+  @@index([lastMessageAt])
+}
+
+model Message {
+  id          String      @id @default(cuid())
+  channelId   String
+  channel     ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  
+  senderId    String
+  sender      User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  
+  content     String      @db.Text
+  read        Boolean     @default(false)
+  readAt      DateTime?
+  
+  attachments Json?
+  
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  @@index([channelId, createdAt])
+  @@index([senderId])
 }

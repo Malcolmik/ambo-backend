@@ -59,6 +59,59 @@ export async function sendPasswordResetEmail(
   }
 }
 
+
+/**
+ * Send new message notification email
+ */
+export async function sendNewMessageEmail(
+  toEmail: string,
+  recipientName: string,
+  senderName: string,
+  messagePreview: string,
+  chatUrl: string
+): Promise<void> {
+  try {
+    await resend.emails.send({
+      from: `${FROM_NAME} <${FROM_EMAIL}>`,
+      to: toEmail,
+      subject: `New Message from ${senderName}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>New Message</title>
+          </head>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 10px;">
+              <h1 style="color: #2563eb; margin-top: 0;">💬 New Message</h1>
+              <p>Hi ${recipientName},</p>
+              <p><strong>${senderName}</strong> sent you a message:</p>
+              <div style="background-color: white; padding: 15px; border-left: 4px solid #2563eb; border-radius: 5px; margin: 20px 0;">
+                <p style="margin: 0; color: #555;">${messagePreview.substring(0, 150)}${messagePreview.length > 150 ? "..." : ""}</p>
+              </div>
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${chatUrl}" style="background-color: #2563eb; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">View Message</a>
+              </div>
+              <p style="color: #666; font-size: 14px;">
+                Reply directly in the AMBO platform to continue the conversation.
+              </p>
+              <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
+              <p style="color: #999; font-size: 12px; text-align: center;">
+                © ${new Date().getFullYear()} AMBO. All rights reserved.
+              </p>
+            </div>
+          </body>
+        </html>
+      `,
+    });
+  } catch (error) {
+    console.error("Error sending new message email:", error);
+    throw new Error("Failed to send new message email");
+  }
+}
+
 /**
  * Send welcome email to new user
  */
