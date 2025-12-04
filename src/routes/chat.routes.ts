@@ -6,6 +6,10 @@ import {
   createOrGetChannel,
   getUnreadCount,
 } from "../modules/chats/chat.controller";
+import {
+  getAvailableContacts,
+  startChat,
+} from "../modules/chats/chat.controller";
 import { authRequired } from "../middleware/auth";
 
 const router = Router();
@@ -19,7 +23,13 @@ router.get("/", getUserChats);
 // Get unread message count (for badge)
 router.get("/unread-count", getUnreadCount);
 
-// Create or get a chat channel (admins/workers only)
+// Get available contacts to start chat with
+router.get("/available-contacts", getAvailableContacts);
+
+// Start a new chat (creates channel and optionally sends first message)
+router.post("/start", startChat);
+
+// Create or get a chat channel (admins/workers only) - DEPRECATED, use /start instead
 router.post("/create", createOrGetChannel);
 
 // Get messages in a specific channel

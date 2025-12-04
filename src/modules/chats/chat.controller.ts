@@ -23,22 +23,40 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
           contactPerson: true,
           logoUrl: true,
           linkedUserId: true,
-          linkedUser: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
         },
         orderBy: { companyName: "asc" },
       });
 
-      return success(res, { contacts: clients });
+      // Get user details for each client
+      const contactsWithUsers = await Promise.all(
+        clients.map(async (client) => {
+          let user = null;
+          // FIXED: Check if linkedUserId exists before querying
+          if (client.linkedUserId) {
+            user = await prisma.user.findUnique({
+              where: { id: client.linkedUserId },
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            });
+          }
+
+          return {
+            ...client,
+            linkedUser: user,
+          };
+        })
+      );
+
+      return success(res, { contacts: contactsWithUsers });
+
     } else if (req.user.role === "WORKER") {
       // Worker sees clients from their assigned contracts
       const contracts = await prisma.contract.findMany({
         where: {
+          // If this line is red, you MUST run 'npx prisma generate'
           tasks: {
             some: {
               assignedToId: req.user.id,
@@ -53,13 +71,6 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
               contactPerson: true,
               logoUrl: true,
               linkedUserId: true,
-              linkedUser: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
-              },
             },
           },
         },
@@ -72,7 +83,31 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
           index === self.findIndex((c) => c.id === client.id)
         );
 
-      return success(res, { contacts: uniqueClients });
+      // Get user details for each client
+      const contactsWithUsers = await Promise.all(
+        uniqueClients.map(async (client) => {
+          let user = null;
+          // FIXED: Check if linkedUserId exists before querying
+          if (client.linkedUserId) {
+            user = await prisma.user.findUnique({
+              where: { id: client.linkedUserId },
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            });
+          }
+
+          return {
+            ...client,
+            linkedUser: user,
+          };
+        })
+      );
+
+      return success(res, { contacts: contactsWithUsers });
+
     } else {
       // Clients see their assigned worker
       const client = await prisma.client.findFirst({
@@ -81,6 +116,9 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
           contracts: {
             include: {
               tasks: {
+                where: {
+                  assignedToId: { not: null },
+                },
                 include: {
                   assignedTo: {
                     select: {
@@ -128,95 +166,48 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
 
 /**
  * POST /api/chats/start
- * Start a chat with a contact (creates channel if doesn't exist and sends first message)
+ * Start a chat with a contact
  */
 export async function startChat(req: AuthedRequest, res: Response) {
   try {
     const { contactId, message } = req.body;
 
-    if (!req.user) {
-      return fail(res, "Unauthorized", 401);
-    }
-
-    if (!contactId) {
-      return fail(res, "Contact ID is required", 400);
-    }
+    if (!req.user) return fail(res, "Unauthorized", 401);
+    if (!contactId) return fail(res, "Contact ID is required", 400);
 
     let clientId: string;
     let workerId: string | null = null;
 
-    // Determine clientId and workerId based on who's initiating
     if (req.user.role === "SUPER_ADMIN" || req.user.role === "WORKER") {
-      // Admin or Worker initiating with a client
       clientId = contactId;
       workerId = req.user.role === "WORKER" ? req.user.id : null;
     } else {
-      // Client initiating with a worker
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
       });
-
-      if (!client) {
-        return fail(res, "Client profile not found", 404);
-      }
-
+      if (!client) return fail(res, "Client profile not found", 404);
       clientId = client.id;
       workerId = contactId;
     }
 
-    // Check if channel already exists
     let channel = await prisma.chatChannel.findFirst({
-      where: {
-        clientId,
-        workerId: workerId || null,
-      },
+      where: { clientId, workerId: workerId || null },
       include: {
-        client: {
-          select: {
-            id: true,
-            companyName: true,
-            contactPerson: true,
-            logoUrl: true,
-          },
-        },
-        worker: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
+        client: { select: { id: true, companyName: true, logoUrl: true } },
+        worker: { select: { id: true, name: true, email: true } },
       },
     });
 
-    // Create channel if it doesn't exist
     if (!channel) {
       channel = await prisma.chatChannel.create({
-        data: {
-          clientId,
-          workerId,
-        },
+        data: { clientId, workerId },
         include: {
-          client: {
-            select: {
-              id: true,
-              companyName: true,
-              contactPerson: true,
-              logoUrl: true,
-            },
-          },
-          worker: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
+          client: { select: { id: true, companyName: true, logoUrl: true } },
+          worker: { select: { id: true, name: true, email: true } },
         },
       });
     }
 
-    // If there's an initial message, send it
     if (message && message.trim()) {
       await prisma.message.create({
         data: {
@@ -225,7 +216,6 @@ export async function startChat(req: AuthedRequest, res: Response) {
           content: message.trim(),
         },
       });
-
       await prisma.chatChannel.update({
         where: { id: channel.id },
         data: { lastMessageAt: new Date() },
@@ -241,161 +231,74 @@ export async function startChat(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/chats
- * Get all chat channels for the authenticated user
+ * Get all chat channels
  */
 export async function getUserChats(req: AuthedRequest, res: Response) {
   try {
-    if (!req.user) {
-      return fail(res, "Unauthorized", 401);
-    }
+    if (!req.user) return fail(res, "Unauthorized", 401);
 
     let channels;
 
-    if (req.user.role === "SUPER_ADMIN") {
-      // Admin sees ALL chats
-      channels = await prisma.chatChannel.findMany({
+    // Common include object for all queries
+    const commonInclude = {
+      client: {
+        select: {
+          id: true,
+          companyName: true,
+          contactPerson: true,
+          logoUrl: true,
+        },
+      },
+      worker: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+      messages: {
+        orderBy: { createdAt: "desc" as const },
+        take: 1,
         include: {
-          client: {
-            select: {
-              id: true,
-              companyName: true,
-              contactPerson: true,
-              logoUrl: true,
-            },
-          },
-          worker: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
+          sender: { select: { id: true, name: true } },
+        },
+      },
+      _count: {
+        select: {
           messages: {
-            orderBy: { createdAt: "desc" },
-            take: 1, // Last message only
-            include: {
-              sender: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-          },
-          _count: {
-            select: {
-              messages: {
-                where: {
-                  read: false,
-                  senderId: { not: req.user.id },
-                },
-              },
+            where: {
+              read: false,
+              senderId: { not: req.user.id },
             },
           },
         },
+      },
+    };
+
+    if (req.user.role === "SUPER_ADMIN") {
+      channels = await prisma.chatChannel.findMany({
+        include: commonInclude,
         orderBy: { lastMessageAt: "desc" },
       });
     } else if (req.user.role === "WORKER") {
-      // Worker sees chats with their assigned clients
       channels = await prisma.chatChannel.findMany({
         where: { workerId: req.user.id },
-        include: {
-          client: {
-            select: {
-              id: true,
-              companyName: true,
-              contactPerson: true,
-              logoUrl: true,
-            },
-          },
-          worker: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-          messages: {
-            orderBy: { createdAt: "desc" },
-            take: 1,
-            include: {
-              sender: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-          },
-          _count: {
-            select: {
-              messages: {
-                where: {
-                  read: false,
-                  senderId: { not: req.user.id },
-                },
-              },
-            },
-          },
-        },
+        include: commonInclude,
         orderBy: { lastMessageAt: "desc" },
       });
     } else {
-      // Client sees only their chat with assigned worker
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
       });
-
-      if (!client) {
-        return success(res, { channels: [] });
-      }
+      if (!client) return success(res, { channels: [] });
 
       channels = await prisma.chatChannel.findMany({
         where: { clientId: client.id },
-        include: {
-          client: {
-            select: {
-              id: true,
-              companyName: true,
-              contactPerson: true,
-              logoUrl: true,
-            },
-          },
-          worker: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-          messages: {
-            orderBy: { createdAt: "desc" },
-            take: 1,
-            include: {
-              sender: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-          },
-          _count: {
-            select: {
-              messages: {
-                where: {
-                  read: false,
-                  senderId: { not: req.user.id },
-                },
-              },
-            },
-          },
-        },
+        include: commonInclude,
         orderBy: { lastMessageAt: "desc" },
       });
     }
 
-    // Format response
     const formattedChannels = channels.map((channel) => ({
       id: channel.id,
       client: channel.client,
@@ -415,66 +318,44 @@ export async function getUserChats(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/chats/:channelId/messages
- * Get all messages in a chat channel
  */
 export async function getChannelMessages(req: AuthedRequest, res: Response) {
   try {
     const { channelId } = req.params;
+    if (!req.user) return fail(res, "Unauthorized", 401);
 
-    if (!req.user) {
-      return fail(res, "Unauthorized", 401);
-    }
-
-    // Verify user has access to this channel
     const channel = await prisma.chatChannel.findUnique({
       where: { id: channelId },
       include: {
-        client: {
-          select: { linkedUserId: true },
-        },
+        client: { select: { linkedUserId: true } },
       },
     });
 
-    if (!channel) {
-      return fail(res, "Chat channel not found", 404);
-    }
+    if (!channel) return fail(res, "Chat channel not found", 404);
 
-    // Check permissions
     const hasAccess =
       req.user.role === "SUPER_ADMIN" ||
       channel.workerId === req.user.id ||
       channel.client.linkedUserId === req.user.id;
 
-    if (!hasAccess) {
-      return fail(res, "Access denied to this chat", 403);
-    }
+    if (!hasAccess) return fail(res, "Access denied", 403);
 
-    // Get messages
     const messages = await prisma.message.findMany({
       where: { channelId },
       include: {
-        sender: {
-          select: {
-            id: true,
-            name: true,
-            role: true,
-          },
-        },
+        sender: { select: { id: true, name: true, role: true } },
       },
       orderBy: { createdAt: "asc" },
     });
 
-    // Mark messages as read
+    // Mark as read
     await prisma.message.updateMany({
       where: {
         channelId,
         senderId: { not: req.user.id },
         read: false,
       },
-      data: {
-        read: true,
-        readAt: new Date(),
-      },
+      data: { read: true, readAt: new Date() },
     });
 
     return success(res, { messages });
@@ -486,63 +367,38 @@ export async function getChannelMessages(req: AuthedRequest, res: Response) {
 
 /**
  * POST /api/chats/:channelId/messages
- * Send a message in a chat channel
  */
 export async function sendMessage(req: AuthedRequest, res: Response) {
   try {
     const { channelId } = req.params;
     const { content } = req.body;
 
-    if (!req.user) {
-      return fail(res, "Unauthorized", 401);
-    }
+    if (!req.user) return fail(res, "Unauthorized", 401);
+    if (!content || content.trim().length === 0) return fail(res, "Message required", 400);
 
-    if (!content || content.trim().length === 0) {
-      return fail(res, "Message content is required", 400);
-    }
-
-    // Verify channel exists and user has access
     const channel = await prisma.chatChannel.findUnique({
       where: { id: channelId },
       include: {
         client: {
           select: {
             id: true,
-            companyName: true,
             linkedUserId: true,
-            linkedUser: {
-              select: {
-                email: true,
-                name: true,
-              },
-            },
+            linkedUser: { select: { email: true, name: true } },
           },
         },
-        worker: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
+        worker: { select: { id: true, name: true, email: true } },
       },
     });
 
-    if (!channel) {
-      return fail(res, "Chat channel not found", 404);
-    }
+    if (!channel) return fail(res, "Chat channel not found", 404);
 
-    // Check permissions
     const hasAccess =
       req.user.role === "SUPER_ADMIN" ||
       channel.workerId === req.user.id ||
       channel.client.linkedUserId === req.user.id;
 
-    if (!hasAccess) {
-      return fail(res, "Access denied to this chat", 403);
-    }
+    if (!hasAccess) return fail(res, "Access denied", 403);
 
-    // Create message
     const message = await prisma.message.create({
       data: {
         channelId,
@@ -550,23 +406,16 @@ export async function sendMessage(req: AuthedRequest, res: Response) {
         content: content.trim(),
       },
       include: {
-        sender: {
-          select: {
-            id: true,
-            name: true,
-            role: true,
-          },
-        },
+        sender: { select: { id: true, name: true, role: true } },
       },
     });
 
-    // Update channel's lastMessageAt
     await prisma.chatChannel.update({
       where: { id: channelId },
       data: { lastMessageAt: new Date() },
     });
 
-    // Determine recipient
+    // Determine recipient for notifications
     const recipientEmail =
       req.user.id === channel.client.linkedUserId
         ? channel.worker?.email
@@ -582,11 +431,9 @@ export async function sendMessage(req: AuthedRequest, res: Response) {
         ? channel.workerId
         : channel.client.linkedUserId;
 
-    // Send email notification to the recipient
     if (recipientEmail && recipientName) {
       try {
         const chatUrl = `${process.env.FRONTEND_URL || "https://ambo-dash.lovable.app"}/messages/${channelId}`;
-        
         await sendNewMessageEmail(
           recipientEmail,
           recipientName,
@@ -595,19 +442,17 @@ export async function sendMessage(req: AuthedRequest, res: Response) {
           chatUrl
         );
       } catch (emailError) {
-        console.error("Failed to send email notification:", emailError);
-        // Don't fail the request if email fails
+        console.error("Email notification failed:", emailError);
       }
     }
 
-    // Create in-app notification
     if (recipientId) {
       await prisma.notification.create({
         data: {
           userId: recipientId,
           type: "NEW_MESSAGE",
           title: "New Message",
-          body: `${req.user.name} sent you a message: "${content.substring(0, 50)}${content.length > 50 ? "..." : ""}"`,
+          body: `${req.user.name}: ${content.substring(0, 30)}...`,
           read: false,
         },
       });
@@ -622,76 +467,34 @@ export async function sendMessage(req: AuthedRequest, res: Response) {
 
 /**
  * POST /api/chats/create
- * Create or get existing chat channel (for admins/workers creating chats)
  */
 export async function createOrGetChannel(req: AuthedRequest, res: Response) {
   try {
     const { clientId, workerId } = req.body;
-
-    if (!req.user) {
-      return fail(res, "Unauthorized", 401);
-    }
-
-    // Only admins and workers can create channels manually
+    if (!req.user) return fail(res, "Unauthorized", 401);
+    
+    // Only admins/workers can manually create
     if (req.user.role !== "SUPER_ADMIN" && req.user.role !== "WORKER") {
-      return fail(res, "Only admins and workers can create chat channels", 403);
+      return fail(res, "Permission denied", 403);
     }
 
-    if (!clientId) {
-      return fail(res, "Client ID is required", 400);
-    }
+    if (!clientId) return fail(res, "Client ID required", 400);
 
-    // Check if channel already exists
     const existing = await prisma.chatChannel.findFirst({
-      where: {
-        clientId,
-        workerId: workerId || null,
-      },
+      where: { clientId, workerId: workerId || null },
       include: {
-        client: {
-          select: {
-            id: true,
-            companyName: true,
-            contactPerson: true,
-            logoUrl: true,
-          },
-        },
-        worker: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
+        client: { select: { id: true, companyName: true, logoUrl: true } },
+        worker: { select: { id: true, name: true, email: true } },
       },
     });
 
-    if (existing) {
-      return success(res, { channel: existing, created: false });
-    }
+    if (existing) return success(res, { channel: existing, created: false });
 
-    // Create new channel
     const channel = await prisma.chatChannel.create({
-      data: {
-        clientId,
-        workerId: workerId || null,
-      },
+      data: { clientId, workerId: workerId || null },
       include: {
-        client: {
-          select: {
-            id: true,
-            companyName: true,
-            contactPerson: true,
-            logoUrl: true,
-          },
-        },
-        worker: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
+        client: { select: { id: true, companyName: true, logoUrl: true } },
+        worker: { select: { id: true, name: true, email: true } },
       },
     });
 
@@ -704,35 +507,26 @@ export async function createOrGetChannel(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/chats/unread-count
- * Get total unread message count for badge display
  */
 export async function getUnreadCount(req: AuthedRequest, res: Response) {
   try {
-    if (!req.user) {
-      return fail(res, "Unauthorized", 401);
-    }
+    if (!req.user) return fail(res, "Unauthorized", 401);
 
     let channelIds: string[] = [];
 
     if (req.user.role === "SUPER_ADMIN") {
-      // Admin sees all channels
-      const channels = await prisma.chatChannel.findMany({
-        select: { id: true },
-      });
+      const channels = await prisma.chatChannel.findMany({ select: { id: true } });
       channelIds = channels.map((c) => c.id);
     } else if (req.user.role === "WORKER") {
-      // Worker's channels
       const channels = await prisma.chatChannel.findMany({
         where: { workerId: req.user.id },
         select: { id: true },
       });
       channelIds = channels.map((c) => c.id);
     } else {
-      // Client's channels
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
       });
-
       if (client) {
         const channels = await prisma.chatChannel.findMany({
           where: { clientId: client.id },
@@ -742,7 +536,6 @@ export async function getUnreadCount(req: AuthedRequest, res: Response) {
       }
     }
 
-    // Count unread messages
     const unreadCount = await prisma.message.count({
       where: {
         channelId: { in: channelIds },
