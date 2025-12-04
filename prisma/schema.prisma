@@ -66,117 +66,115 @@ enum PaymentProvider {
 }
 
 model User {
-  id               String        @id @default(cuid())
+  id               String    @id @default(cuid())
   name             String
-  email            String        @unique
+  email            String    @unique
   phone            String?
   passwordHash     String
   role             Role
-  active           Boolean       @default(true)
-  resetToken       String?       @unique
+  active           Boolean   @default(true)
+  resetToken       String?   @unique
   resetTokenExpiry DateTime?
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   // Relations
-  clients          Client[]       @relation("ClientLinkedUser")
-  tasksAssigned    Task[]         @relation("TaskAssignedTo")
-  tasksCreated     Task[]         @relation("TaskCreatedBy")
-  comments         TaskComment[]
-  updates          TaskUpdate[]
-  auditLogs        AuditLog[]
-  payments         Payment[]
-  notifications    Notification[]
-  files            File[]
+  clients       Client[]       @relation("ClientLinkedUser")
+  tasksAssigned Task[]         @relation("TaskAssignedTo")
+  tasksCreated  Task[]         @relation("TaskCreatedBy")
+  comments      TaskComment[]
+  updates       TaskUpdate[]
+  auditLogs     AuditLog[]
+  payments      Payment[]
+  notifications Notification[]
+  files         File[]
 
-  workerChats      ChatChannel[] @relation("WorkerChats")
-  messages         Message[]
+  workerChats ChatChannel[] @relation("WorkerChats")
+  messages    Message[]
 }
 
 model Client {
-  id             String        @id @default(cuid())
-  companyName    String
-  contactPerson  String
-  email          String
-  phone          String
-  whatsapp       String?
-  logoUrl        String?
-  status         ClientStatus  @default(LEAD)
-  notes          String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  id            String       @id @default(cuid())
+  companyName   String
+  contactPerson String
+  email         String
+  phone         String
+  whatsapp      String?
+  logoUrl       String?
+  status        ClientStatus @default(LEAD)
+  notes         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
-  linkedUserId   String?
-  linkedUser     User?         @relation("ClientLinkedUser", fields: [linkedUserId], references: [id])
+  linkedUserId String?
+  linkedUser   User?   @relation("ClientLinkedUser", fields: [linkedUserId], references: [id])
 
   // Relations
-  tasks          Task[]
-  contracts      Contract[]
+  tasks     Task[]
+  contracts Contract[]
 
-  chatChannels   ChatChannel[]
+  chatChannels ChatChannel[]
 }
 
 model Contract {
-  id             String          @id @default(cuid())
-  clientId       String
-  client         Client          @relation(fields: [clientId], references: [id])
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id])
+  tasks    Task[]
 
-  packageType    String          // "CLASSIC" | "DELUXE" | "PREMIUM" | "CUSTOM"
-  services       Json            // array of service line items if custom
-  totalPrice     Float
-  currency       String          @default("NGN")
+  packageType String // "CLASSIC" | "DELUXE" | "PREMIUM" | "CUSTOM"
+  services    Json // array of service line items if custom
+  totalPrice  Float
+  currency    String @default("NGN")
 
-  paymentStatus  PaymentStatus   @default(PENDING)
-  status         ContractStatus  @default(AWAITING_PAYMENT)
+  paymentStatus PaymentStatus  @default(PENDING)
+  status        ContractStatus @default(AWAITING_PAYMENT)
 
-  paymentRef     String?         @unique
-  chatChannelUrl String?         @db.VarChar(191)
+  paymentRef     String? @unique
+  chatChannelUrl String? @db.VarChar(191)
 
-  
   // Relations
-  payments       Payment[]
-  questionnaire  Questionnaire?
-  review         Review?
+  payments      Payment[]
+  questionnaire Questionnaire?
+  review        Review?
 
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-
-  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Questionnaire {
-  id          String   @id @default(cuid())
-  contractId  String   @unique
-  contract    Contract @relation(fields: [contractId], references: [id])
-  responses   Json
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(cuid())
+  contractId String   @unique
+  contract   Contract @relation(fields: [contractId], references: [id])
+  responses  Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
 
 model Review {
   id         String   @id @default(cuid())
   contractId String   @unique
   contract   Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
-  rating     Int      // 1-5 stars
+  rating     Int // 1-5 stars
   feedback   String?  @db.Text
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }
 
 model File {
-  id                  String   @id @default(cuid())
-  filename            String
-  fileUrl             String
-  fileType            String
-  fileSize            Int
-  cloudinaryPublicId  String?
-  uploadedById        String
-  uploadedBy          User     @relation(fields: [uploadedById], references: [id])
-  entityType          String   // CONTRACT, TASK, QUESTIONNAIRE, CLIENT, USER
-  entityId            String
-  description         String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  filename           String
+  fileUrl            String
+  fileType           String
+  fileSize           Int
+  cloudinaryPublicId String?
+  uploadedById       String
+  uploadedBy         User     @relation(fields: [uploadedById], references: [id])
+  entityType         String // CONTRACT, TASK, QUESTIONNAIRE, CLIENT, USER
+  entityId           String
+  description        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@index([entityType, entityId])
   @@index([uploadedById])
@@ -186,80 +184,83 @@ model Payment {
   id            String          @id @default(cuid())
   provider      PaymentProvider
   reference     String          @unique
-  amount        Int             // Amount in kobo (e.g., NGN 25,000.00 = 2,500,000 kobo)
+  amount        Int // Amount in kobo (e.g., NGN 25,000.00 = 2,500,000 kobo)
   currency      String          @default("NGN")
   status        PaymentStatus
-  channel       String?         // card, bank, ussd, etc.
+  channel       String? // card, bank, ussd, etc.
   paidAt        DateTime?
   customerEmail String?
-  meta          Json?           // Additional metadata
-  rawPayload    Json?           // Full provider response for audits
+  meta          Json? // Additional metadata
+  rawPayload    Json? // Full provider response for audits
 
   // Relations
-  userId        String?
-  user          User?           @relation(fields: [userId], references: [id])
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
 
-  contractId    String?
-  contract      Contract?       @relation(fields: [contractId], references: [id])
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id])
 
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([reference])
   @@index([status])
 }
 
 model Notification {
-  id        String    @id @default(cuid())
+  id        String   @id @default(cuid())
   userId    String
-  user      User      @relation(fields: [userId], references: [id])
-  type      String    // PAYMENT_CONFIRMED, QUESTIONNAIRE_SUBMITTED, TASK_ASSIGNED, etc.
+  user      User     @relation(fields: [userId], references: [id])
+  type      String // PAYMENT_CONFIRMED, QUESTIONNAIRE_SUBMITTED, TASK_ASSIGNED, etc.
   title     String
   body      String
-  read      Boolean   @default(false)
-  createdAt DateTime  @default(now())
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
 
   @@index([userId, read])
 }
 
 model Task {
-  id                     String                @id @default(cuid())
-  title                  String
-  description            String
-  priority               TaskPriority          @default(MEDIUM)
-  status                 TaskStatus            @default(NOT_STARTED)
-  clientApprovalStatus   ClientApprovalStatus  @default(PENDING)
-  dueDate                DateTime?
-  requiresApproval       Boolean               @default(false)
-  meta                   Json?                 // For storing decline reasons, completion notes, etc.
-  createdAt              DateTime              @default(now())
-  updatedAt              DateTime              @updatedAt
+  id                   String               @id @default(cuid())
+  title                String
+  description          String
+  priority             TaskPriority         @default(MEDIUM)
+  status               TaskStatus           @default(NOT_STARTED)
+  clientApprovalStatus ClientApprovalStatus @default(PENDING)
+  dueDate              DateTime?
+  requiresApproval     Boolean              @default(false)
+  meta                 Json? // For storing decline reasons, completion notes, etc.
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
 
-  clientId     String?
-  client       Client?        @relation(fields: [clientId], references: [id])
+  clientId String?
+  client   Client? @relation(fields: [clientId], references: [id])
+
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id])
 
   assignedToId String?
-  assignedTo   User?          @relation("TaskAssignedTo", fields: [assignedToId], references: [id])
+  assignedTo   User?   @relation("TaskAssignedTo", fields: [assignedToId], references: [id])
 
-  createdById  String
-  createdBy    User           @relation("TaskCreatedBy", fields: [createdById], references: [id])
+  createdById String
+  createdBy   User   @relation("TaskCreatedBy", fields: [createdById], references: [id])
 
   // Relations
-  comments     TaskComment[]
-  updates      TaskUpdate[]
+  comments TaskComment[]
+  updates  TaskUpdate[]
 }
 
 model TaskComment {
-  id               String    @id @default(cuid())
-  content          String
-  isClientComment  Boolean   @default(false)
-  createdAt        DateTime  @default(now())
+  id              String   @id @default(cuid())
+  content         String
+  isClientComment Boolean  @default(false)
+  createdAt       DateTime @default(now())
 
-  taskId           String
-  task             Task      @relation(fields: [taskId], references: [id])
+  taskId String
+  task   Task   @relation(fields: [taskId], references: [id])
 
-  userId           String
-  user             User      @relation(fields: [userId], references: [id])
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
 }
 
 model TaskUpdate {
@@ -270,40 +271,41 @@ model TaskUpdate {
   attachmentUrl String?
   timestamp     DateTime    @default(now())
 
-  taskId        String
-  task          Task        @relation(fields: [taskId], references: [id])
+  taskId String
+  task   Task   @relation(fields: [taskId], references: [id])
 
-  userId        String
-  user          User        @relation(fields: [userId], references: [id])
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
 }
 
 model AuditLog {
-  id          String    @id @default(cuid())
-  actionType  String    // TASK_CREATED, PAYMENT_SUCCESS, CONTRACT_UPDATED, etc.
-  entityType  String    // TASK, CONTRACT, PAYMENT, etc.
-  entityId    String
-  metaJson    Json?
-  timestamp   DateTime  @default(now())
+  id         String   @id @default(cuid())
+  actionType String // TASK_CREATED, PAYMENT_SUCCESS, CONTRACT_UPDATED, etc.
+  entityType String // TASK, CONTRACT, PAYMENT, etc.
+  entityId   String
+  metaJson   Json?
+  timestamp  DateTime @default(now())
 
-  userId      String
-  user        User      @relation(fields: [userId], references: [id])
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
 
   @@index([entityType, entityId])
   @@index([userId])
 }
+
 model ChatChannel {
-  id          String    @id @default(cuid())
-  clientId    String
-  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  workerId    String?
-  worker      User?     @relation("WorkerChats", fields: [workerId], references: [id], onDelete: SetNull)
-  
+  id       String  @id @default(cuid())
+  clientId String
+  client   Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  workerId String?
+  worker   User?   @relation("WorkerChats", fields: [workerId], references: [id], onDelete: SetNull)
+
   lastMessageAt DateTime @default(now())
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
-  messages    Message[]
-  
+
+  messages Message[]
+
   @@unique([clientId, workerId])
   @@index([clientId])
   @@index([workerId])
@@ -311,22 +313,22 @@ model ChatChannel {
 }
 
 model Message {
-  id          String      @id @default(cuid())
-  channelId   String
-  channel     ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  
-  senderId    String
-  sender      User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
-  
-  content     String      @db.Text
-  read        Boolean     @default(false)
-  readAt      DateTime?
-  
+  id        String      @id @default(cuid())
+  channelId String
+  channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  senderId String
+  sender   User   @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  content String    @db.Text
+  read    Boolean   @default(false)
+  readAt  DateTime?
+
   attachments Json?
-  
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([channelId, createdAt])
   @@index([senderId])
 }

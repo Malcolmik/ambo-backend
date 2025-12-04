@@ -5,6 +5,241 @@ import { success, fail } from "../../utils/response";
 import { sendNewMessageEmail } from "../../services/email.service";
 
 /**
+ * GET /api/chats/available-contacts
+ * Get list of users/clients the authenticated user can chat with
+ */
+export async function getAvailableContacts(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    if (req.user.role === "SUPER_ADMIN") {
+      // Admin can chat with ALL clients
+      const clients = await prisma.client.findMany({
+        select: {
+          id: true,
+          companyName: true,
+          contactPerson: true,
+          logoUrl: true,
+          linkedUserId: true,
+          linkedUser: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: { companyName: "asc" },
+      });
+
+      return success(res, { contacts: clients });
+    } else if (req.user.role === "WORKER") {
+      // Worker sees clients from their assigned contracts
+      const contracts = await prisma.contract.findMany({
+        where: {
+          tasks: {
+            some: {
+              assignedToId: req.user.id,
+            },
+          },
+        },
+        select: {
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              contactPerson: true,
+              logoUrl: true,
+              linkedUserId: true,
+              linkedUser: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      // Remove duplicates
+      const uniqueClients = contracts
+        .map((c) => c.client)
+        .filter((client, index, self) => 
+          index === self.findIndex((c) => c.id === client.id)
+        );
+
+      return success(res, { contacts: uniqueClients });
+    } else {
+      // Clients see their assigned worker
+      const client = await prisma.client.findFirst({
+        where: { linkedUserId: req.user.id },
+        include: {
+          contracts: {
+            include: {
+              tasks: {
+                include: {
+                  assignedTo: {
+                    select: {
+                      id: true,
+                      name: true,
+                      email: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!client) {
+        return success(res, { contacts: [] });
+      }
+
+      // Get unique workers from assigned tasks
+      const workers: any[] = [];
+      const workerIds = new Set<string>();
+
+      client.contracts.forEach((contract) => {
+        contract.tasks.forEach((task) => {
+          if (task.assignedTo && !workerIds.has(task.assignedTo.id)) {
+            workerIds.add(task.assignedTo.id);
+            workers.push({
+              id: task.assignedTo.id,
+              name: task.assignedTo.name,
+              email: task.assignedTo.email,
+              type: "worker",
+            });
+          }
+        });
+      });
+
+      return success(res, { contacts: workers });
+    }
+  } catch (err: any) {
+    console.error("getAvailableContacts error:", err);
+    return fail(res, "Failed to get available contacts", 500);
+  }
+}
+
+/**
+ * POST /api/chats/start
+ * Start a chat with a contact (creates channel if doesn't exist and sends first message)
+ */
+export async function startChat(req: AuthedRequest, res: Response) {
+  try {
+    const { contactId, message } = req.body;
+
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    if (!contactId) {
+      return fail(res, "Contact ID is required", 400);
+    }
+
+    let clientId: string;
+    let workerId: string | null = null;
+
+    // Determine clientId and workerId based on who's initiating
+    if (req.user.role === "SUPER_ADMIN" || req.user.role === "WORKER") {
+      // Admin or Worker initiating with a client
+      clientId = contactId;
+      workerId = req.user.role === "WORKER" ? req.user.id : null;
+    } else {
+      // Client initiating with a worker
+      const client = await prisma.client.findFirst({
+        where: { linkedUserId: req.user.id },
+      });
+
+      if (!client) {
+        return fail(res, "Client profile not found", 404);
+      }
+
+      clientId = client.id;
+      workerId = contactId;
+    }
+
+    // Check if channel already exists
+    let channel = await prisma.chatChannel.findFirst({
+      where: {
+        clientId,
+        workerId: workerId || null,
+      },
+      include: {
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+            contactPerson: true,
+            logoUrl: true,
+          },
+        },
+        worker: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    // Create channel if it doesn't exist
+    if (!channel) {
+      channel = await prisma.chatChannel.create({
+        data: {
+          clientId,
+          workerId,
+        },
+        include: {
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              contactPerson: true,
+              logoUrl: true,
+            },
+          },
+          worker: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+      });
+    }
+
+    // If there's an initial message, send it
+    if (message && message.trim()) {
+      await prisma.message.create({
+        data: {
+          channelId: channel.id,
+          senderId: req.user.id,
+          content: message.trim(),
+        },
+      });
+
+      await prisma.chatChannel.update({
+        where: { id: channel.id },
+        data: { lastMessageAt: new Date() },
+      });
+    }
+
+    return success(res, { channel });
+  } catch (err: any) {
+    console.error("startChat error:", err);
+    return fail(res, "Failed to start chat", 500);
+  }
+}
+
+/**
  * GET /api/chats
  * Get all chat channels for the authenticated user
  */
