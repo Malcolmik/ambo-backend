@@ -5,6 +5,7 @@ import {
   sendMessage,
   createOrGetChannel,
   getUnreadCount,
+  markChannelAsRead,
 } from "../modules/chats/chat.controller";
 import {
   getAvailableContacts,
@@ -31,6 +32,9 @@ router.post("/start", startChat);
 
 // Create or get a chat channel (admins/workers only) - DEPRECATED, use /start instead
 router.post("/create", createOrGetChannel);
+
+// Mark channel messages as read
+router.patch("/:channelId/read", markChannelAsRead);
 
 // Get messages in a specific channel
 router.get("/:channelId/messages", getChannelMessages);

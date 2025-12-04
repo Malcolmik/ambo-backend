@@ -4,6 +4,61 @@ import { AuthedRequest } from "../../middleware/auth";
 import { success, fail } from "../../utils/response";
 import { sendNewMessageEmail } from "../../services/email.service";
 
+
+
+
+/**
+ * PATCH /api/chats/:channelId/read
+ * Mark all messages in a channel as read
+ */
+export async function markChannelAsRead(req: AuthedRequest, res: Response) {
+  try {
+    const { channelId } = req.params;
+
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    const channel = await prisma.chatChannel.findUnique({
+      where: { id: channelId },
+      include: {
+        client: { select: { linkedUserId: true } },
+      },
+    });
+
+    if (!channel) {
+      return fail(res, "Chat channel not found", 404);
+    }
+
+    const hasAccess =
+      req.user.role === "SUPER_ADMIN" ||
+      channel.workerId === req.user.id ||
+      channel.client.linkedUserId === req.user.id;
+
+    if (!hasAccess) {
+      return fail(res, "Access denied to this chat", 403);
+    }
+
+    await prisma.message.updateMany({
+      where: {
+        channelId,
+        senderId: { not: req.user.id },
+        read: false,
+      },
+      data: {
+        read: true,
+        readAt: new Date(),
+      },
+    });
+
+    return success(res, { message: "Messages marked as read" });
+  } catch (err: any) {
+    console.error("markChannelAsRead error:", err);
+    return fail(res, "Failed to mark messages as read", 500);
+  }
+}
+
+
 /**
  * GET /api/chats/available-contacts
  * Get list of users/clients the authenticated user can chat with
