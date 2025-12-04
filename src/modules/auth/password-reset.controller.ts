@@ -18,48 +18,90 @@ export async function forgotPassword(req: Request, res: Response) {
       return fail(res, "Email is required", 400);
     }
 
-    // Find user
     const user = await prisma.user.findUnique({
-      where: { email },
+      where: { email }
     });
 
-    // Always return success (don't reveal if email exists)
+    // Always return success to avoid revealing if email exists
     if (!user) {
-      return success(res, {
-        message: "If an account exists with that email, a password reset link has been sent",
-      });
+      return success(res, { message: "If an account exists, you'll receive a reset email" });
     }
 
-    // Generate reset token
+    // Generate reset token (plain, not hashed)
     const resetToken = crypto.randomBytes(32).toString("hex");
-    const resetTokenHash = crypto.createHash("sha256").update(resetToken).digest("hex");
-    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour from now
+    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour
 
-    // Save token to database
     await prisma.user.update({
       where: { id: user.id },
       data: {
-        resetToken: resetTokenHash,
-        resetTokenExpiry,
-      },
+        resetToken: resetToken,
+        resetTokenExpiry: resetTokenExpiry
+      }
     });
 
-    // Send email with reset link
-    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
-    
+    // LOGGING CODE 
+    const frontendUrl = process.env.FRONTEND_URL || "https://ambo-ops.hub.lovable.app";
+    const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
+
+    console.log("═══════════════════════════════════════");
+    console.log("🔐 PASSWORD RESET REQUEST");
+    console.log("📧 Email:", email);
+    console.log("🔗 Reset Link:", resetLink);
+    console.log("⏰ Expires:", resetTokenExpiry.toISOString());
+    console.log("═══════════════════════════════════════");
+
+    // Try to send email (this might fail silently)
     try {
-      await sendPasswordResetEmail(user.email, user.name, resetUrl);
+      await sendPasswordResetEmail(email, user.name, resetLink);
+      console.log("✅ Email sent successfully");
     } catch (emailError) {
-      console.error("Error sending password reset email:", emailError);
-      // Don't fail the request - token is still valid
+      console.error("❌ Email failed:", emailError);
+      // Continue anyway - user can see link in logs for testing
     }
 
-    return success(res, {
-      message: "If an account exists with that email, a password reset link has been sent",
+    return success(res, { 
+      message: "If an account exists, you'll receive a reset email"
     });
   } catch (err: any) {
     console.error("forgotPassword error:", err);
-    return fail(res, "Failed to process password reset request", 500);
+    return fail(res, "Failed to process request", 500);
+  }
+}
+
+/**
+ * POST /api/auth/verify-reset-token
+ * Verify if a reset token is valid (before showing password form)
+ */
+export async function verifyResetToken(req: Request, res: Response) {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      return fail(res, "Token is required", 400);
+    }
+
+    // Find user with valid token (plain token, no hashing)
+    const user = await prisma.user.findFirst({
+      where: {
+        resetToken: token,
+        resetTokenExpiry: {
+          gt: new Date(),
+        },
+      },
+    });
+
+    if (!user) {
+      return fail(res, "Invalid or expired reset token", 400);
+    }
+
+    return success(res, {
+      valid: true,
+      email: user.email,
+      name: user.name,
+    });
+  } catch (err: any) {
+    console.error("verifyResetToken error:", err);
+    return fail(res, "Failed to verify token", 500);
   }
 }
 
@@ -79,13 +121,10 @@ export async function resetPassword(req: Request, res: Response) {
       return fail(res, "Password must be at least 8 characters", 400);
     }
 
-    // Hash the token to match database
-    const resetTokenHash = crypto.createHash("sha256").update(token).digest("hex");
-
-    // Find user with valid token
+    // Find user with valid token (plain token, no hashing)
     const user = await prisma.user.findFirst({
       where: {
-        resetToken: resetTokenHash,
+        resetToken: token,
         resetTokenExpiry: {
           gt: new Date(), // Token not expired
         },
@@ -116,11 +155,13 @@ export async function resetPassword(req: Request, res: Response) {
         actionType: "PASSWORD_RESET",
         entityType: "USER",
         entityId: user.id,
-        metaJson: {
+        metaJson: JSON.parse(JSON.stringify({
           method: "reset_token",
-        } as any,
+        })),
       },
     });
+
+    console.log("✅ Password reset successful for:", user.email);
 
     return success(res, {
       message: "Password reset successfully. You can now log in with your new password.",
@@ -128,50 +169,5 @@ export async function resetPassword(req: Request, res: Response) {
   } catch (err: any) {
     console.error("resetPassword error:", err);
     return fail(res, "Failed to reset password", 500);
-  }
-}
-
-/**
- * POST /api/auth/verify-reset-token
- * Verify if a reset token is valid (before showing password form)
- */
-export async function verifyResetToken(req: Request, res: Response) {
-  try {
-    const { token } = req.body;
-
-    if (!token) {
-      return fail(res, "Token is required", 400);
-    }
-
-    // Hash the token to match database
-    const resetTokenHash = crypto.createHash("sha256").update(token).digest("hex");
-
-    // Find user with valid token
-    const user = await prisma.user.findFirst({
-      where: {
-        resetToken: resetTokenHash,
-        resetTokenExpiry: {
-          gt: new Date(),
-        },
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-      },
-    });
-
-    if (!user) {
-      return fail(res, "Invalid or expired reset token", 400);
-    }
-
-    return success(res, {
-      valid: true,
-      email: user.email,
-      name: user.name,
-    });
-  } catch (err: any) {
-    console.error("verifyResetToken error:", err);
-    return fail(res, "Failed to verify token", 500);
   }
 }
