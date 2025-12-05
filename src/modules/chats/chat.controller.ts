@@ -16,36 +16,23 @@ export async function markChannelAsRead(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
+    // Verify channel exists
     const channel = await prisma.chatChannel.findUnique({
       where: { id: channelId },
-      include: {
-        client: { select: { linkedUserId: true } },
-      },
     });
 
     if (!channel) {
-      return fail(res, "Chat channel not found", 404);
+      return fail(res, "Channel not found", 404);
     }
 
-    const hasAccess =
-      req.user.role === "SUPER_ADMIN" ||
-      channel.workerId === req.user.id ||
-      channel.client.linkedUserId === req.user.id;
-
-    if (!hasAccess) {
-      return fail(res, "Access denied to this chat", 403);
-    }
-
+    // Mark messages as read
     await prisma.message.updateMany({
       where: {
         channelId,
         senderId: { not: req.user.id },
         read: false,
       },
-      data: {
-        read: true,
-        readAt: new Date(),
-      },
+      data: { read: true },
     });
 
     return success(res, { message: "Messages marked as read" });
@@ -447,86 +434,202 @@ export async function startChat(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/chats
+ * Get all chat channels for the authenticated user
+ * Returns channels with a computed displayName based on who's viewing
  */
 export async function getUserChats(req: AuthedRequest, res: Response) {
   try {
-    if (!req.user) return fail(res, "Unauthorized", 401);
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
 
     let channels;
 
-    const commonInclude = {
-      client: {
-        select: {
-          id: true,
-          companyName: true,
-          contactPerson: true,
-          logoUrl: true,
-        },
-      },
-      worker: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-        },
-      },
-      messages: {
-        orderBy: { createdAt: "desc" as const },
-        take: 1,
+    if (req.user.role === "SUPER_ADMIN") {
+      // Admin sees ALL chats - display shows client name
+      channels = await prisma.chatChannel.findMany({
         include: {
-          sender: { select: { id: true, name: true } },
-        },
-      },
-      _count: {
-        select: {
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              contactPerson: true,
+              logoUrl: true,
+            },
+          },
+          worker: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
           messages: {
-            where: {
-              read: false,
-              senderId: { not: req.user.id },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            include: {
+              sender: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
             },
           },
         },
-      },
-    };
-
-    if (req.user.role === "SUPER_ADMIN") {
-      channels = await prisma.chatChannel.findMany({
-        include: commonInclude,
         orderBy: { lastMessageAt: "desc" },
       });
+
+      // Add displayName for admin view - show client name
+      const channelsWithDisplay = channels.map((channel) => ({
+        ...channel,
+        displayName: channel.client?.companyName || channel.client?.contactPerson || "Unknown Client",
+        displaySubtitle: channel.worker ? `Worker: ${channel.worker.name}` : "Direct",
+        unreadCount: 0, // Will be calculated below
+      }));
+
+      // Calculate unread counts
+      for (const channel of channelsWithDisplay) {
+        const unread = await prisma.message.count({
+          where: {
+            channelId: channel.id,
+            senderId: { not: req.user.id },
+            read: false,
+          },
+        });
+        channel.unreadCount = unread;
+      }
+
+      return success(res, channelsWithDisplay);
+
     } else if (req.user.role === "WORKER") {
+      // Worker sees chats with their assigned clients - display shows client name
       channels = await prisma.chatChannel.findMany({
         where: { workerId: req.user.id },
-        include: commonInclude,
+        include: {
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              contactPerson: true,
+              logoUrl: true,
+            },
+          },
+          worker: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+          messages: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            include: {
+              sender: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
         orderBy: { lastMessageAt: "desc" },
       });
+
+      // Add displayName for worker view - show client name
+      const channelsWithDisplay = channels.map((channel) => ({
+        ...channel,
+        displayName: channel.client?.companyName || channel.client?.contactPerson || "Unknown Client",
+        displaySubtitle: channel.client?.contactPerson || "",
+        unreadCount: 0,
+      }));
+
+      // Calculate unread counts
+      for (const channel of channelsWithDisplay) {
+        const unread = await prisma.message.count({
+          where: {
+            channelId: channel.id,
+            senderId: { not: req.user.id },
+            read: false,
+          },
+        });
+        channel.unreadCount = unread;
+      }
+
+      return success(res, channelsWithDisplay);
+
     } else {
+      // CLIENT_VIEWER sees their chats - display shows WORKER name (who they're chatting with)
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
       });
-      if (!client) return success(res, { channels: [] });
+
+      if (!client) {
+        return success(res, []);
+      }
 
       channels = await prisma.chatChannel.findMany({
         where: { clientId: client.id },
-        include: commonInclude,
+        include: {
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              contactPerson: true,
+              logoUrl: true,
+            },
+          },
+          worker: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+          messages: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            include: {
+              sender: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
         orderBy: { lastMessageAt: "desc" },
       });
+
+      // Add displayName for client view - show WORKER name (not their own company!)
+      const channelsWithDisplay = channels.map((channel) => ({
+        ...channel,
+        // For clients: show who they're chatting WITH
+        displayName: channel.worker?.name || "AMBO Support",
+        displaySubtitle: channel.worker?.email || "Support Team",
+        unreadCount: 0,
+      }));
+
+      // Calculate unread counts
+      for (const channel of channelsWithDisplay) {
+        const unread = await prisma.message.count({
+          where: {
+            channelId: channel.id,
+            senderId: { not: req.user.id },
+            read: false,
+          },
+        });
+        channel.unreadCount = unread;
+      }
+
+      return success(res, channelsWithDisplay);
     }
-
-    const formattedChannels = channels.map((channel) => ({
-      id: channel.id,
-      client: channel.client,
-      worker: channel.worker,
-      lastMessage: channel.messages[0] || null,
-      unreadCount: channel._count.messages,
-      lastMessageAt: channel.lastMessageAt,
-      createdAt: channel.createdAt,
-    }));
-
-    return success(res, { channels: formattedChannels });
   } catch (err: any) {
     console.error("getUserChats error:", err);
-    return fail(res, "Failed to retrieve chats", 500);
+    return fail(res, "Failed to load chats", 500);
   }
 }
 
@@ -680,35 +783,72 @@ export async function sendMessage(req: AuthedRequest, res: Response) {
 }
 
 /**
- * POST /api/chats/create
+ * POST /api/chats/channel
+ * Create or get existing chat channel
  */
 export async function createOrGetChannel(req: AuthedRequest, res: Response) {
   try {
     const { clientId, workerId } = req.body;
-    if (!req.user) return fail(res, "Unauthorized", 401);
-    
-    // Only admins/workers can manually create
-    if (req.user.role !== "SUPER_ADMIN" && req.user.role !== "WORKER") {
-      return fail(res, "Permission denied", 403);
+
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
     }
 
-    if (!clientId) return fail(res, "Client ID required", 400);
+    if (!clientId) {
+      return fail(res, "Client ID is required", 400);
+    }
 
+    // Check if channel already exists
     const existing = await prisma.chatChannel.findFirst({
-      where: { clientId, workerId: workerId || null },
+      where: {
+        clientId,
+        workerId: workerId || null,
+      },
       include: {
-        client: { select: { id: true, companyName: true, logoUrl: true } },
-        worker: { select: { id: true, name: true, email: true } },
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+            contactPerson: true,
+            logoUrl: true,
+          },
+        },
+        worker: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
       },
     });
 
-    if (existing) return success(res, { channel: existing, created: false });
+    if (existing) {
+      return success(res, { channel: existing, created: false });
+    }
 
+    // Create new channel
     const channel = await prisma.chatChannel.create({
-      data: { clientId, workerId: workerId || null },
+      data: {
+        clientId,
+        workerId: workerId || null,
+      },
       include: {
-        client: { select: { id: true, companyName: true, logoUrl: true } },
-        worker: { select: { id: true, name: true, email: true } },
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+            contactPerson: true,
+            logoUrl: true,
+          },
+        },
+        worker: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
       },
     });
 
@@ -721,15 +861,20 @@ export async function createOrGetChannel(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/chats/unread-count
+ * Get total unread message count for badge display
  */
 export async function getUnreadCount(req: AuthedRequest, res: Response) {
   try {
-    if (!req.user) return fail(res, "Unauthorized", 401);
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
 
     let channelIds: string[] = [];
 
     if (req.user.role === "SUPER_ADMIN") {
-      const channels = await prisma.chatChannel.findMany({ select: { id: true } });
+      const channels = await prisma.chatChannel.findMany({
+        select: { id: true },
+      });
       channelIds = channels.map((c) => c.id);
     } else if (req.user.role === "WORKER") {
       const channels = await prisma.chatChannel.findMany({
@@ -741,6 +886,7 @@ export async function getUnreadCount(req: AuthedRequest, res: Response) {
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
       });
+
       if (client) {
         const channels = await prisma.chatChannel.findMany({
           where: { clientId: client.id },
