@@ -5,8 +5,8 @@ import { success, fail } from "../../utils/response";
 
 /**
  * GET /api/chats/debug/worker-assignments
- * Debug endpoint to see what clients a worker has access to
- * TEMPORARY - Remove after debugging
+ * Debug endpoint to see what tasks are assigned to the current worker
+ * REMOVE THIS AFTER DEBUGGING
  */
 export async function debugWorkerAssignments(req: AuthedRequest, res: Response) {
   try {
@@ -14,38 +14,20 @@ export async function debugWorkerAssignments(req: AuthedRequest, res: Response) 
       return fail(res, "Unauthorized", 401);
     }
 
-    const workerId = req.user.id;
+    // Get user info
+    const userInfo = {
+      id: req.user.id,
+      name: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+    };
 
-    // Check 1: Tasks assigned to worker
+    // Find all tasks assigned to this user
     const assignedTasks = await prisma.task.findMany({
-      where: { assignedToId: workerId },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        contractId: true,
-        contract: {
-          select: {
-            id: true,
-            packageType: true,
-            client: {
-              select: {
-                id: true,
-                companyName: true,
-                contactPerson: true,
-              },
-            },
-          },
-        },
+      where: {
+        assignedToId: req.user.id,
       },
-    });
-
-    // Check 2: All contracts with their clients
-    const allContracts = await prisma.contract.findMany({
-      select: {
-        id: true,
-        packageType: true,
-        status: true,
+      include: {
         client: {
           select: {
             id: true,
@@ -53,40 +35,73 @@ export async function debugWorkerAssignments(req: AuthedRequest, res: Response) 
             linkedUserId: true,
           },
         },
-        tasks: {
-          where: { assignedToId: workerId },
+        contract: {
           select: {
             id: true,
-            title: true,
-            status: true,
+            clientId: true,
           },
         },
       },
     });
 
-    // Check 3: User details
-    const userDetails = await prisma.user.findUnique({
-      where: { id: workerId },
+    // Find all contracts where this user has tasks
+    const contractsWithUserTasks = await prisma.contract.findMany({
+      where: {
+        tasks: {
+          some: {
+            assignedToId: req.user.id,
+          },
+        },
+      },
+      include: {
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+            linkedUserId: true,
+          },
+        },
+      },
+    });
+
+    // Get all clients that have linkedUserId (can be chatted with)
+    const clientsWithUsers = await prisma.client.findMany({
+      where: {
+        linkedUserId: { not: null },
+      },
       select: {
         id: true,
-        name: true,
-        email: true,
-        role: true,
+        companyName: true,
+        linkedUserId: true,
       },
     });
 
     return success(res, {
-      debug: {
-        workerId,
-        userDetails,
-        assignedTasks,
-        totalTasksAssigned: assignedTasks.length,
-        allContracts: allContracts.filter((c) => c.tasks.length > 0),
-        totalContractsWithTasks: allContracts.filter((c) => c.tasks.length > 0).length,
+      user: userInfo,
+      assignedTasks: assignedTasks.map(t => ({
+        taskId: t.id,
+        taskTitle: t.title,
+        directClientId: t.clientId,
+        directClientName: t.client?.companyName,
+        directClientLinkedUserId: t.client?.linkedUserId,
+        contractId: t.contractId,
+        contractClientId: t.contract?.clientId,
+      })),
+      contractsWithUserTasks: contractsWithUserTasks.map(c => ({
+        contractId: c.id,
+        clientId: c.clientId,
+        clientName: c.client?.companyName,
+        clientLinkedUserId: c.client?.linkedUserId,
+      })),
+      allClientsWithLinkedUsers: clientsWithUsers,
+      summary: {
+        totalAssignedTasks: assignedTasks.length,
+        totalContractsWithTasks: contractsWithUserTasks.length,
+        totalClientsWithLinkedUsers: clientsWithUsers.length,
       },
     });
   } catch (err: any) {
     console.error("debugWorkerAssignments error:", err);
-    return fail(res, "Failed to debug worker assignments", 500);
+    return fail(res, "Debug failed: " + err.message, 500);
   }
 }

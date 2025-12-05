@@ -65,49 +65,68 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
+    console.log(`[available-contacts] User: ${req.user.id}, Role: ${req.user.role}`);
+
     if (req.user.role === "SUPER_ADMIN") {
-      // Admin can chat with ALL clients
+      // Admin can chat with ALL clients that have a linked user
       const clients = await prisma.client.findMany({
-        select: {
-          id: true,
-          companyName: true,
-          contactPerson: true,
-          logoUrl: true,
-          linkedUserId: true,
+        where: {
+          linkedUserId: { not: null },
+        },
+        include: {
+          linkedUser: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
         },
         orderBy: { companyName: "asc" },
       });
 
-      // Get user details for each client
-      const contactsWithUsers = await Promise.all(
-        clients.map(async (client) => {
-          let user = null;
-          
-          // FIXED: Check if linkedUserId is not null before querying
-          if (client.linkedUserId) {
-            user = await prisma.user.findUnique({
-              where: { id: client.linkedUserId },
-              select: {
-                id: true,
-                name: true,
-                email: true,
-              },
-            });
-          }
+      const contacts = clients.map((client) => ({
+        id: client.id,
+        name: client.companyName || client.contactPerson,
+        email: client.linkedUser?.email,
+        companyName: client.companyName,
+        contactPerson: client.contactPerson,
+        logoUrl: client.logoUrl,
+        userId: client.linkedUserId,
+        type: "client",
+      }));
 
-          return {
-            ...client,
-            linkedUser: user,
-          };
-        })
-      );
+      console.log(`[available-contacts] Admin sees ${contacts.length} clients`);
+      return success(res, { contacts });
 
-      return success(res, { contacts: contactsWithUsers });
     } else if (req.user.role === "WORKER") {
-      // Worker sees clients from their assigned contracts via TASKS
+      // Worker sees clients from their assigned tasks
       
-      // Method 1: Find clients through task assignments (This works based on your schema)
-      const contractsFromTasks = await prisma.contract.findMany({
+      // Method 1: Find clients directly through tasks with clientId
+      const tasksWithClients = await prisma.task.findMany({
+        where: {
+          assignedToId: req.user.id,
+          clientId: { not: null },
+        },
+        include: {
+          client: {
+            include: {
+              linkedUser: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      console.log(`[available-contacts] Worker has ${tasksWithClients.length} tasks with clients`);
+
+      // Method 2: Find clients through contract->tasks
+      const contractsWithTasks = await prisma.contract.findMany({
         where: {
           tasks: {
             some: {
@@ -115,103 +134,143 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
             },
           },
         },
-        select: {
+        include: {
           client: {
-            select: {
-              id: true,
-              companyName: true,
-              contactPerson: true,
-              logoUrl: true,
-              linkedUserId: true,
+            include: {
+              linkedUser: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
             },
           },
         },
       });
 
-      // FIXED: Removed "Method 2" because 'workerId' and 'assignedToId' do not exist on Contract model
-      
-      // Extract clients and remove duplicates
-      const uniqueClients = contractsFromTasks
-        .map((c) => c.client)
-        .filter((client, index, self) => 
-          index === self.findIndex((c) => c.id === client.id)
-        );
+      console.log(`[available-contacts] Worker has ${contractsWithTasks.length} contracts with assigned tasks`);
 
-      // Get user details for each client
-      const contactsWithUsers = await Promise.all(
-        uniqueClients.map(async (client) => {
-          let user = null;
+      // Combine both methods
+      const clientMap = new Map();
 
-          // FIXED: Check if linkedUserId is not null before querying
-          if (client.linkedUserId) {
-            user = await prisma.user.findUnique({
-              where: { id: client.linkedUserId },
-              select: {
-                id: true,
-                name: true,
-                email: true,
-              },
-            });
-          }
+      // Add clients from direct task assignments
+      tasksWithClients.forEach((task) => {
+        if (task.client && task.client.linkedUserId) {
+          clientMap.set(task.client.id, task.client);
+        }
+      });
 
-          return {
-            ...client,
-            linkedUser: user,
-          };
-        })
-      );
+      // Add clients from contract assignments
+      contractsWithTasks.forEach((contract) => {
+        if (contract.client && contract.client.linkedUserId) {
+          clientMap.set(contract.client.id, contract.client);
+        }
+      });
 
-      return success(res, { contacts: contactsWithUsers });
-    } else {
-      // Clients see their assigned worker
+      const uniqueClients = Array.from(clientMap.values());
+
+      const contacts = uniqueClients.map((client) => ({
+        id: client.id,
+        name: client.companyName || client.contactPerson,
+        email: client.linkedUser?.email,
+        companyName: client.companyName,
+        contactPerson: client.contactPerson,
+        logoUrl: client.logoUrl,
+        userId: client.linkedUserId,
+        type: "client",
+      }));
+
+      console.log(`[available-contacts] Worker can chat with ${contacts.length} clients`);
+      return success(res, { contacts });
+
+    } else if (req.user.role === "CLIENT_VIEWER") {
+      // Client sees workers assigned to their tasks
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
-        select: {
-          id: true,
-          contracts: {
-            select: {
-              tasks: {
-                where: {
-                  assignedToId: { not: null },
-                },
-                select: {
-                  assignedTo: {
-                    select: {
-                      id: true,
-                      name: true,
-                      email: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
       });
 
       if (!client) {
+        console.log(`[available-contacts] No client found for user ${req.user.id}`);
         return success(res, { contacts: [] });
       }
 
-      // Get unique workers from assigned tasks
-      const workers: any[] = [];
-      const workerIds = new Set<string>();
+      // Find workers from tasks assigned to this client
+      const tasksWithWorkers = await prisma.task.findMany({
+        where: {
+          clientId: client.id,
+          assignedToId: { not: null },
+        },
+        include: {
+          assignedTo: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+      });
 
-      client.contracts.forEach((contract) => {
-        contract.tasks.forEach((task) => {
-          if (task.assignedTo && !workerIds.has(task.assignedTo.id)) {
-            workerIds.add(task.assignedTo.id);
-            workers.push({
-              id: task.assignedTo.id,
-              name: task.assignedTo.name,
-              email: task.assignedTo.email,
-              type: "worker",
-            });
-          }
+      // Also check tasks through contracts
+      const contractTasks = await prisma.task.findMany({
+        where: {
+          contract: {
+            clientId: client.id,
+          },
+          assignedToId: { not: null },
+        },
+        include: {
+          assignedTo: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+      });
+
+      // Combine and deduplicate workers
+      const workerMap = new Map();
+
+      [...tasksWithWorkers, ...contractTasks].forEach((task) => {
+        if (task.assignedTo) {
+          workerMap.set(task.assignedTo.id, task.assignedTo);
+        }
+      });
+
+      const contacts = Array.from(workerMap.values()).map((worker) => ({
+        id: worker.id,
+        name: worker.name,
+        email: worker.email,
+        type: "worker",
+      }));
+
+      // Also add super admins so clients can reach support
+      const admins = await prisma.user.findMany({
+        where: { role: "SUPER_ADMIN" },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      });
+
+      admins.forEach((admin) => {
+        contacts.push({
+          id: admin.id,
+          name: admin.name || "AMBO Support",
+          email: admin.email,
+          type: "admin",
         });
       });
 
-      return success(res, { contacts: workers });
+      console.log(`[available-contacts] Client can chat with ${contacts.length} contacts`);
+      return success(res, { contacts });
+
+    } else {
+      return success(res, { contacts: [] });
     }
   } catch (err: any) {
     console.error("getAvailableContacts error:", err);
@@ -221,7 +280,7 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
 
 /**
  * POST /api/chats/start
- * Start a chat with a contact
+ * Start a chat with a contact (creates channel if doesn't exist)
  */
 export async function startChat(req: AuthedRequest, res: Response) {
   try {
@@ -235,91 +294,11 @@ export async function startChat(req: AuthedRequest, res: Response) {
       return fail(res, "Contact ID is required", 400);
     }
 
-    let clientId: string;
-    let workerId: string | null = null;
-
-    if (req.user.role === "SUPER_ADMIN" || req.user.role === "WORKER") {
-      clientId = contactId;
-      workerId = req.user.role === "WORKER" ? req.user.id : null;
-    } else {
-      const client = await prisma.client.findFirst({
-        where: { linkedUserId: req.user.id },
-      });
-
-      if (!client) {
-        return fail(res, "Client profile not found", 404);
-      }
-
-      clientId = client.id;
-      workerId = contactId;
-    }
-
-    let channel = await prisma.chatChannel.findFirst({
-      where: {
-        clientId,
-        workerId: workerId || null,
-      },
-      include: {
-        client: {
-          select: {
-            id: true,
-            companyName: true,
-            contactPerson: true,
-            logoUrl: true,
-          },
-        },
-        worker: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-      },
+    // For now, just return success - the frontend will use createOrGetChannel
+    return success(res, { 
+      message: "Use createOrGetChannel endpoint instead",
+      contactId 
     });
-
-    if (!channel) {
-      channel = await prisma.chatChannel.create({
-        data: {
-          clientId,
-          workerId,
-        },
-        include: {
-          client: {
-            select: {
-              id: true,
-              companyName: true,
-              contactPerson: true,
-              logoUrl: true,
-            },
-          },
-          worker: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-        },
-      });
-    }
-
-    if (message && message.trim()) {
-      await prisma.message.create({
-        data: {
-          channelId: channel.id,
-          senderId: req.user.id,
-          content: message.trim(),
-        },
-      });
-
-      await prisma.chatChannel.update({
-        where: { id: channel.id },
-        data: { lastMessageAt: new Date() },
-      });
-    }
-
-    return success(res, { channel });
   } catch (err: any) {
     console.error("startChat error:", err);
     return fail(res, "Failed to start chat", 500);
