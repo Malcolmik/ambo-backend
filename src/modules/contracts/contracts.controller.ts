@@ -112,7 +112,7 @@ export async function getAllContracts(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/contracts/my
- * Get contracts for the authenticated user (CLIENT_VIEWER or SUPER_ADMIN)
+ * Get contracts for the authenticated user (CLIENT_VIEWER, SUPER_ADMIN, or WORKER)
  * Now includes task/worker information and questionnaire status
  */
 export async function myContracts(req: AuthedRequest, res: Response) {
@@ -299,6 +299,107 @@ export async function myContracts(req: AuthedRequest, res: Response) {
       });
     }
 
+    if (req.user.role === "WORKER") {
+      // Worker sees contracts for clients they have tasks assigned to
+      const assignedTasks = await prisma.task.findMany({
+        where: { assignedToId: req.user.id },
+        select: { clientId: true },
+      });
+
+      const clientIds = [...new Set(assignedTasks.map(t => t.clientId).filter((id): id is string => !!id))];
+
+      if (clientIds.length === 0) {
+        return success(res, {
+          contracts: [],
+          summary: {
+            total: 0,
+            needingQuestionnaire: 0,
+            readyForAssignment: 0,
+            inProgress: 0,
+          },
+        });
+      }
+
+      const contracts = await prisma.contract.findMany({
+        where: { clientId: { in: clientIds } },
+        include: {
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              email: true,
+            },
+          },
+          questionnaire: {
+            select: {
+              id: true,
+              responses: true,
+              createdAt: true,
+            },
+          },
+          payments: {
+            orderBy: { createdAt: "desc" },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      // Get tasks for these clients (to display active task counts etc.)
+      const tasks = await prisma.task.findMany({
+        where: { clientId: { in: clientIds } },
+        include: {
+          assignedTo: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      // Transform for frontend
+      const transformedContracts = contracts.map((contract: any) => {
+        const contractTasks = tasks.filter((t: any) => t.clientId === contract.clientId);
+        
+        return {
+          ...contract,
+          hasQuestionnaire: !!contract.questionnaire,
+          questionnaireCompletedAt: contract.questionnaire?.createdAt || null,
+          needsQuestionnaire: contract.status === ContractStatus.AWAITING_QUESTIONNAIRE,
+          tasks: contractTasks.map((task: any) => ({
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            status: task.status,
+            priority: task.priority,
+            dueDate: task.dueDate,
+            assignedWorker: task.assignedTo ? {
+              id: task.assignedTo.id,
+              name: task.assignedTo.name,
+              email: task.assignedTo.email,
+            } : null,
+            createdAt: task.createdAt,
+          })),
+          totalTasks: contractTasks.length,
+          activeTasks: contractTasks.filter((t: any) => t.status === "IN_PROGRESS").length,
+          completedTasks: contractTasks.filter((t: any) => t.status === "DONE").length,
+          hasAssignedWorker: contractTasks.some((t: any) => t.assignedTo !== null),
+        };
+      });
+
+      return success(res, {
+        contracts: transformedContracts,
+        summary: {
+          total: contracts.length,
+          needingQuestionnaire: contracts.filter((c: any) => c.status === ContractStatus.AWAITING_QUESTIONNAIRE).length,
+          readyForAssignment: contracts.filter((c: any) => c.status === ContractStatus.READY_FOR_ASSIGNMENT).length,
+          inProgress: contracts.filter((c: any) => c.status === ContractStatus.IN_PROGRESS).length,
+        },
+      });
+    }
+
     return fail(res, "Forbidden", 403);
   } catch (err: any) {
     console.error("myContracts error:", err);
@@ -343,7 +444,22 @@ export async function getContract(req: AuthedRequest, res: Response) {
         return fail(res, "Forbidden", 403);
       }
     } else if (req.user.role !== "SUPER_ADMIN") {
-      return fail(res, "Forbidden", 403);
+      // Allow WORKER if they have tasks for this client
+      if (req.user.role === "WORKER") {
+        const hasTask = await prisma.task.findFirst({
+          where: {
+            clientId: contract.clientId,
+            assignedToId: req.user.id
+          }
+        });
+        
+        if (!hasTask) {
+          return fail(res, "Forbidden", 403);
+        }
+        // If hasTask is true, execution continues to return success
+      } else {
+        return fail(res, "Forbidden", 403);
+      }
     }
 
     return success(res, contract);
@@ -384,7 +500,21 @@ export async function getContractTasks(req: AuthedRequest, res: Response) {
         return fail(res, "Forbidden", 403);
       }
     } else if (req.user.role !== "SUPER_ADMIN") {
-      return fail(res, "Forbidden", 403);
+       // Allow WORKER if they have tasks for this client
+       if (req.user.role === "WORKER") {
+        const hasTask = await prisma.task.findFirst({
+          where: {
+            clientId: contract.clientId,
+            assignedToId: req.user.id
+          }
+        });
+        
+        if (!hasTask) {
+          return fail(res, "Forbidden", 403);
+        }
+      } else {
+        return fail(res, "Forbidden", 403);
+      }
     }
 
     // Get tasks for this contract's client
