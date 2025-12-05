@@ -294,11 +294,151 @@ export async function startChat(req: AuthedRequest, res: Response) {
       return fail(res, "Contact ID is required", 400);
     }
 
-    // For now, just return success - the frontend will use createOrGetChannel
-    return success(res, { 
-      message: "Use createOrGetChannel endpoint instead",
-      contactId 
+    console.log(`[startChat] User: ${req.user.id}, Role: ${req.user.role}, ContactId: ${contactId}`);
+
+    let clientId: string;
+    let workerId: string | null = null;
+
+    if (req.user.role === "SUPER_ADMIN") {
+      // Admin starting chat with a client
+      // contactId is the client ID
+      clientId = contactId;
+      workerId = null; // Admin chats don't have a specific worker
+      
+    } else if (req.user.role === "WORKER") {
+      // Worker starting chat with a client
+      // contactId is the client ID
+      clientId = contactId;
+      workerId = req.user.id;
+      
+    } else if (req.user.role === "CLIENT_VIEWER") {
+      // Client starting chat with a worker or admin
+      // contactId is the user ID (worker or admin)
+      
+      // First, get the client record for this user
+      const client = await prisma.client.findFirst({
+        where: { linkedUserId: req.user.id },
+      });
+
+      if (!client) {
+        return fail(res, "Client record not found", 404);
+      }
+
+      clientId = client.id;
+      
+      // Check if the contact is an admin or worker
+      const contactUser = await prisma.user.findUnique({
+        where: { id: contactId },
+      });
+
+      if (!contactUser) {
+        return fail(res, "Contact not found", 404);
+      }
+
+      if (contactUser.role === "WORKER") {
+        workerId = contactId;
+      } else {
+        // Admin chat - no specific worker
+        workerId = null;
+      }
+    } else {
+      return fail(res, "Unauthorized role", 403);
+    }
+
+    console.log(`[startChat] Looking for channel: clientId=${clientId}, workerId=${workerId}`);
+
+    // Check if channel already exists
+    const existingChannel = await prisma.chatChannel.findFirst({
+      where: {
+        clientId,
+        workerId,
+      },
+      include: {
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+            contactPerson: true,
+            logoUrl: true,
+          },
+        },
+        worker: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
     });
+
+    if (existingChannel) {
+      console.log(`[startChat] Found existing channel: ${existingChannel.id}`);
+      
+      // If there's an initial message, send it
+      if (message && message.trim()) {
+        await prisma.message.create({
+          data: {
+            channelId: existingChannel.id,
+            senderId: req.user.id,
+            content: message.trim(),
+          },
+        });
+
+        await prisma.chatChannel.update({
+          where: { id: existingChannel.id },
+          data: { lastMessageAt: new Date() },
+        });
+      }
+
+      return success(res, { channel: existingChannel, created: false });
+    }
+
+    // Create new channel
+    console.log(`[startChat] Creating new channel`);
+    const newChannel = await prisma.chatChannel.create({
+      data: {
+        clientId,
+        workerId,
+      },
+      include: {
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+            contactPerson: true,
+            logoUrl: true,
+          },
+        },
+        worker: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    console.log(`[startChat] Created channel: ${newChannel.id}`);
+
+    // If there's an initial message, send it
+    if (message && message.trim()) {
+      await prisma.message.create({
+        data: {
+          channelId: newChannel.id,
+          senderId: req.user.id,
+          content: message.trim(),
+        },
+      });
+
+      await prisma.chatChannel.update({
+        where: { id: newChannel.id },
+        data: { lastMessageAt: new Date() },
+      });
+    }
+
+    return success(res, { channel: newChannel, created: true });
   } catch (err: any) {
     console.error("startChat error:", err);
     return fail(res, "Failed to start chat", 500);
