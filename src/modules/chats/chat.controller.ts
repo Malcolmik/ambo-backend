@@ -4,9 +4,6 @@ import { AuthedRequest } from "../../middleware/auth";
 import { success, fail } from "../../utils/response";
 import { sendNewMessageEmail } from "../../services/email.service";
 
-
-
-
 /**
  * PATCH /api/chats/:channelId/read
  * Mark all messages in a channel as read
@@ -58,7 +55,6 @@ export async function markChannelAsRead(req: AuthedRequest, res: Response) {
   }
 }
 
-
 /**
  * GET /api/chats/available-contacts
  * Get list of users/clients the authenticated user can chat with
@@ -86,7 +82,8 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
       const contactsWithUsers = await Promise.all(
         clients.map(async (client) => {
           let user = null;
-          // FIXED: Check if linkedUserId exists before querying
+          
+          // FIXED: Check if linkedUserId is not null before querying
           if (client.linkedUserId) {
             user = await prisma.user.findUnique({
               where: { id: client.linkedUserId },
@@ -106,12 +103,12 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
       );
 
       return success(res, { contacts: contactsWithUsers });
-
     } else if (req.user.role === "WORKER") {
-      // Worker sees clients from their assigned contracts
-      const contracts = await prisma.contract.findMany({
+      // Worker sees clients from their assigned contracts via TASKS
+      
+      // Method 1: Find clients through task assignments (This works based on your schema)
+      const contractsFromTasks = await prisma.contract.findMany({
         where: {
-          // If this line is red, you MUST run 'npx prisma generate'
           tasks: {
             some: {
               assignedToId: req.user.id,
@@ -131,8 +128,10 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
         },
       });
 
-      // Remove duplicates
-      const uniqueClients = contracts
+      // FIXED: Removed "Method 2" because 'workerId' and 'assignedToId' do not exist on Contract model
+      
+      // Extract clients and remove duplicates
+      const uniqueClients = contractsFromTasks
         .map((c) => c.client)
         .filter((client, index, self) => 
           index === self.findIndex((c) => c.id === client.id)
@@ -142,7 +141,8 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
       const contactsWithUsers = await Promise.all(
         uniqueClients.map(async (client) => {
           let user = null;
-          // FIXED: Check if linkedUserId exists before querying
+
+          // FIXED: Check if linkedUserId is not null before querying
           if (client.linkedUserId) {
             user = await prisma.user.findUnique({
               where: { id: client.linkedUserId },
@@ -162,19 +162,19 @@ export async function getAvailableContacts(req: AuthedRequest, res: Response) {
       );
 
       return success(res, { contacts: contactsWithUsers });
-
     } else {
       // Clients see their assigned worker
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
-        include: {
+        select: {
+          id: true,
           contracts: {
-            include: {
+            select: {
               tasks: {
                 where: {
                   assignedToId: { not: null },
                 },
-                include: {
+                select: {
                   assignedTo: {
                     select: {
                       id: true,
@@ -227,8 +227,13 @@ export async function startChat(req: AuthedRequest, res: Response) {
   try {
     const { contactId, message } = req.body;
 
-    if (!req.user) return fail(res, "Unauthorized", 401);
-    if (!contactId) return fail(res, "Contact ID is required", 400);
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    if (!contactId) {
+      return fail(res, "Contact ID is required", 400);
+    }
 
     let clientId: string;
     let workerId: string | null = null;
@@ -240,25 +245,61 @@ export async function startChat(req: AuthedRequest, res: Response) {
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
       });
-      if (!client) return fail(res, "Client profile not found", 404);
+
+      if (!client) {
+        return fail(res, "Client profile not found", 404);
+      }
+
       clientId = client.id;
       workerId = contactId;
     }
 
     let channel = await prisma.chatChannel.findFirst({
-      where: { clientId, workerId: workerId || null },
+      where: {
+        clientId,
+        workerId: workerId || null,
+      },
       include: {
-        client: { select: { id: true, companyName: true, logoUrl: true } },
-        worker: { select: { id: true, name: true, email: true } },
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+            contactPerson: true,
+            logoUrl: true,
+          },
+        },
+        worker: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
       },
     });
 
     if (!channel) {
       channel = await prisma.chatChannel.create({
-        data: { clientId, workerId },
+        data: {
+          clientId,
+          workerId,
+        },
         include: {
-          client: { select: { id: true, companyName: true, logoUrl: true } },
-          worker: { select: { id: true, name: true, email: true } },
+          client: {
+            select: {
+              id: true,
+              companyName: true,
+              contactPerson: true,
+              logoUrl: true,
+            },
+          },
+          worker: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
         },
       });
     }
@@ -271,6 +312,7 @@ export async function startChat(req: AuthedRequest, res: Response) {
           content: message.trim(),
         },
       });
+
       await prisma.chatChannel.update({
         where: { id: channel.id },
         data: { lastMessageAt: new Date() },
@@ -286,7 +328,6 @@ export async function startChat(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/chats
- * Get all chat channels
  */
 export async function getUserChats(req: AuthedRequest, res: Response) {
   try {
@@ -294,7 +335,6 @@ export async function getUserChats(req: AuthedRequest, res: Response) {
 
     let channels;
 
-    // Common include object for all queries
     const commonInclude = {
       client: {
         select: {

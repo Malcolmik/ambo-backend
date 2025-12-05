@@ -11,12 +11,16 @@ import {
   getAvailableContacts,
   startChat,
 } from "../modules/chats/chat.controller";
+import { debugWorkerAssignments } from "../modules/chats/chat-debug.controller";
 import { authRequired } from "../middleware/auth";
 
 const router = Router();
 
 // All routes require authentication
 router.use(authRequired);
+
+// DEBUG ENDPOINT - REMOVE AFTER FIXING
+router.get("/debug/worker-assignments", debugWorkerAssignments);
 
 // Get all user's chat channels
 router.get("/", getUserChats);
