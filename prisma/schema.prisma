@@ -7,8 +7,13 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================
+// ENUMS
+// ============================================
+
 enum Role {
   SUPER_ADMIN
+  ADMIN                   // NEW: Middle-tier operations manager
   WORKER
   CLIENT_VIEWER
   CLIENT_VIEWER_PENDING
@@ -65,6 +70,38 @@ enum PaymentProvider {
   PAYSTACK
 }
 
+// NEW: Job Broadcasting Status
+enum JobStatus {
+  DRAFT           // Task created but not broadcasted
+  OPEN            // Available for workers to apply
+  REVIEWING       // Has applications, under review
+  ASSIGNED        // Worker approved and assigned
+  IN_PROGRESS     // Work started
+  PENDING_REVIEW  // Awaiting admin approval of work
+  COMPLETED       // Done
+  CANCELLED       // Cancelled
+}
+
+// NEW: Application Status
+enum ApplicationStatus {
+  PENDING         // Awaiting review
+  APPROVED        // Selected for the job
+  REJECTED        // Not selected
+  WITHDRAWN       // Worker withdrew interest
+}
+
+// NEW: Worker Payment Status (for earnings tracking)
+enum WorkerPaymentStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+}
+
+// ============================================
+// USER MODEL
+// ============================================
+
 model User {
   id               String    @id @default(cuid())
   name             String
@@ -82,6 +119,7 @@ model User {
   clients       Client[]       @relation("ClientLinkedUser")
   tasksAssigned Task[]         @relation("TaskAssignedTo")
   tasksCreated  Task[]         @relation("TaskCreatedBy")
+  tasksPaidBy   Task[]         @relation("TaskPaidBy")      // NEW: Tasks this user marked as paid
   comments      TaskComment[]
   updates       TaskUpdate[]
   auditLogs     AuditLog[]
@@ -91,7 +129,15 @@ model User {
 
   workerChats ChatChannel[] @relation("WorkerChats")
   messages    Message[]
+
+  // NEW: Job Applications
+  jobApplications       JobApplication[] @relation("WorkerApplications")
+  reviewedApplications  JobApplication[] @relation("ApplicationReviewer")
 }
+
+// ============================================
+// CLIENT MODEL
+// ============================================
 
 model Client {
   id            String       @id @default(cuid())
@@ -110,11 +156,14 @@ model Client {
   linkedUser   User?   @relation("ClientLinkedUser", fields: [linkedUserId], references: [id])
 
   // Relations
-  tasks     Task[]
-  contracts Contract[]
-
+  tasks        Task[]
+  contracts    Contract[]
   chatChannels ChatChannel[]
 }
+
+// ============================================
+// CONTRACT MODEL
+// ============================================
 
 model Contract {
   id       String @id @default(cuid())
@@ -122,8 +171,8 @@ model Contract {
   client   Client @relation(fields: [clientId], references: [id])
   tasks    Task[]
 
-  packageType String // "CLASSIC" | "DELUXE" | "PREMIUM" | "CUSTOM"
-  services    Json // array of service line items if custom
+  packageType String
+  services    Json
   totalPrice  Float
   currency    String @default("NGN")
 
@@ -142,6 +191,105 @@ model Contract {
   updatedAt DateTime @updatedAt
 }
 
+// ============================================
+// TASK MODEL (Updated with Job Broadcasting)
+// ============================================
+
+model Task {
+  id                   String               @id @default(cuid())
+  title                String
+  description          String
+  priority             TaskPriority         @default(MEDIUM)
+  status               TaskStatus           @default(NOT_STARTED)
+  clientApprovalStatus ClientApprovalStatus @default(PENDING)
+  dueDate              DateTime?
+  requiresApproval     Boolean              @default(false)
+  meta                 Json?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  clientId String?
+  client   Client? @relation(fields: [clientId], references: [id])
+
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id])
+
+  assignedToId String?
+  assignedTo   User?   @relation("TaskAssignedTo", fields: [assignedToId], references: [id])
+
+  createdById String
+  createdBy   User   @relation("TaskCreatedBy", fields: [createdById], references: [id])
+
+  // NEW: Job Broadcasting Fields
+  jobStatus   JobStatus @default(DRAFT)    // Broadcasting status
+  isPublic    Boolean   @default(false)    // Visible in job board
+  postedAt    DateTime?                    // When pushed to broadcast
+  deadline    DateTime?                    // Application deadline
+
+  // NEW: Worker Payment/Earnings Fields
+  paymentAmount       Decimal?            @db.Decimal(10, 2)  // Amount worker earns (NGN)
+  workerPaymentStatus WorkerPaymentStatus @default(PENDING)
+  paidAt              DateTime?
+  paidById            String?
+  paidBy              User?               @relation("TaskPaidBy", fields: [paidById], references: [id])
+
+  // Relations
+  comments     TaskComment[]
+  updates      TaskUpdate[]
+  applications JobApplication[]  // NEW: Workers who applied
+
+  @@index([jobStatus, isPublic])
+  @@index([assignedToId, status])
+  @@index([workerPaymentStatus])
+}
+
+// ============================================
+// NEW: JOB APPLICATION MODEL
+// ============================================
+
+model JobApplication {
+  id              String            @id @default(cuid())
+  
+  taskId          String
+  task            Task              @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  
+  workerId        String
+  worker          User              @relation("WorkerApplications", fields: [workerId], references: [id])
+  
+  status          ApplicationStatus @default(PENDING)
+  coverNote       String?           @db.Text      // Worker's pitch/message
+  
+  appliedAt       DateTime          @default(now())
+  reviewedAt      DateTime?
+  reviewedById    String?
+  reviewedBy      User?             @relation("ApplicationReviewer", fields: [reviewedById], references: [id])
+  rejectionReason String?
+
+  @@unique([taskId, workerId])  // One application per worker per task
+  @@index([taskId, status])
+  @@index([workerId, status])
+}
+
+// ============================================
+// NEW: PLATFORM SETTINGS MODEL
+// ============================================
+
+model PlatformSettings {
+  id               String   @id @default("default")
+  
+  // Support Channels
+  supportWhatsapp  String?
+  supportEmail     String?
+  supportInstagram String?
+  supportPhone     String?
+  
+  updatedAt        DateTime @default(now()) @updatedAt
+}
+
+// ============================================
+// EXISTING MODELS (Unchanged)
+// ============================================
+
 model Questionnaire {
   id         String   @id @default(cuid())
   contractId String   @unique
@@ -155,7 +303,7 @@ model Review {
   id         String   @id @default(cuid())
   contractId String   @unique
   contract   Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
-  rating     Int // 1-5 stars
+  rating     Int
   feedback   String?  @db.Text
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -170,7 +318,7 @@ model File {
   cloudinaryPublicId String?
   uploadedById       String
   uploadedBy         User     @relation(fields: [uploadedById], references: [id])
-  entityType         String // CONTRACT, TASK, QUESTIONNAIRE, CLIENT, USER
+  entityType         String
   entityId           String
   description        String?
   createdAt          DateTime @default(now())
@@ -184,16 +332,15 @@ model Payment {
   id            String          @id @default(cuid())
   provider      PaymentProvider
   reference     String          @unique
-  amount        Int // Amount in kobo (e.g., NGN 25,000.00 = 2,500,000 kobo)
+  amount        Int
   currency      String          @default("NGN")
   status        PaymentStatus
-  channel       String? // card, bank, ussd, etc.
+  channel       String?
   paidAt        DateTime?
   customerEmail String?
-  meta          Json? // Additional metadata
-  rawPayload    Json? // Full provider response for audits
+  meta          Json?
+  rawPayload    Json?
 
-  // Relations
   userId String?
   user   User?   @relation(fields: [userId], references: [id])
 
@@ -211,43 +358,13 @@ model Notification {
   id        String   @id @default(cuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id])
-  type      String // PAYMENT_CONFIRMED, QUESTIONNAIRE_SUBMITTED, TASK_ASSIGNED, etc.
+  type      String
   title     String
   body      String
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 
   @@index([userId, read])
-}
-
-model Task {
-  id                   String               @id @default(cuid())
-  title                String
-  description          String
-  priority             TaskPriority         @default(MEDIUM)
-  status               TaskStatus           @default(NOT_STARTED)
-  clientApprovalStatus ClientApprovalStatus @default(PENDING)
-  dueDate              DateTime?
-  requiresApproval     Boolean              @default(false)
-  meta                 Json? // For storing decline reasons, completion notes, etc.
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
-
-  clientId String?
-  client   Client? @relation(fields: [clientId], references: [id])
-
-  contractId String?
-  contract   Contract? @relation(fields: [contractId], references: [id])
-
-  assignedToId String?
-  assignedTo   User?   @relation("TaskAssignedTo", fields: [assignedToId], references: [id])
-
-  createdById String
-  createdBy   User   @relation("TaskCreatedBy", fields: [createdById], references: [id])
-
-  // Relations
-  comments TaskComment[]
-  updates  TaskUpdate[]
 }
 
 model TaskComment {
@@ -280,8 +397,8 @@ model TaskUpdate {
 
 model AuditLog {
   id         String   @id @default(cuid())
-  actionType String // TASK_CREATED, PAYMENT_SUCCESS, CONTRACT_UPDATED, etc.
-  entityType String // TASK, CONTRACT, PAYMENT, etc.
+  actionType String
+  entityType String
   entityId   String
   metaJson   Json?
   timestamp  DateTime @default(now())
