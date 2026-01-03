@@ -13,7 +13,7 @@ datasource db {
 
 enum Role {
   SUPER_ADMIN
-  ADMIN                   // NEW: Middle-tier operations manager
+  ADMIN
   WORKER
   CLIENT_VIEWER
   CLIENT_VIEWER_PENDING
@@ -26,11 +26,10 @@ enum ClientStatus {
   CLOSED
 }
 
+// UPDATED: Simplified to just PRIORITY and CRITICAL
 enum TaskPriority {
-  LOW
-  MEDIUM
-  HIGH
-  CRITICAL
+  PRIORITY    // For standalone services
+  CRITICAL    // For package contracts
 }
 
 enum TaskStatus {
@@ -70,27 +69,24 @@ enum PaymentProvider {
   PAYSTACK
 }
 
-// NEW: Job Broadcasting Status
 enum JobStatus {
-  DRAFT           // Task created but not broadcasted
-  OPEN            // Available for workers to apply
-  REVIEWING       // Has applications, under review
-  ASSIGNED        // Worker approved and assigned
-  IN_PROGRESS     // Work started
-  PENDING_REVIEW  // Awaiting admin approval of work
-  COMPLETED       // Done
-  CANCELLED       // Cancelled
+  DRAFT
+  OPEN
+  REVIEWING
+  ASSIGNED
+  IN_PROGRESS
+  PENDING_REVIEW
+  COMPLETED
+  CANCELLED
 }
 
-// NEW: Application Status
 enum ApplicationStatus {
-  PENDING         // Awaiting review
-  APPROVED        // Selected for the job
-  REJECTED        // Not selected
-  WITHDRAWN       // Worker withdrew interest
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
 }
 
-// NEW: Worker Payment Status (for earnings tracking)
 enum WorkerPaymentStatus {
   PENDING
   PROCESSING
@@ -119,8 +115,8 @@ model User {
   clients       Client[]       @relation("ClientLinkedUser")
   tasksAssigned Task[]         @relation("TaskAssignedTo")
   tasksCreated  Task[]         @relation("TaskCreatedBy")
-  tasksPosted   Task[]         @relation("TaskPostedBy")     // NEW: Tasks this user broadcasted
-  tasksPaidBy   Task[]         @relation("TaskPaidBy")       // Tasks this user marked as paid
+  tasksPosted   Task[]         @relation("TaskPostedBy")
+  tasksPaidBy   Task[]         @relation("TaskPaidBy")
   comments      TaskComment[]
   updates       TaskUpdate[]
   auditLogs     AuditLog[]
@@ -131,7 +127,6 @@ model User {
   workerChats ChatChannel[] @relation("WorkerChats")
   messages    Message[]
 
-  // NEW: Job Applications
   jobApplications       JobApplication[] @relation("WorkerApplications")
   reviewedApplications  JobApplication[] @relation("ApplicationReviewer")
 }
@@ -175,7 +170,7 @@ model Contract {
   packageType String
   services    Json
   totalPrice  Float
-  currency    String @default("NGN")
+  currency    String @default("USD")
 
   paymentStatus PaymentStatus  @default(PENDING)
   status        ContractStatus @default(AWAITING_PAYMENT)
@@ -200,7 +195,7 @@ model Task {
   id                   String               @id @default(cuid())
   title                String
   description          String
-  priority             TaskPriority         @default(MEDIUM)
+  priority             TaskPriority         @default(PRIORITY)  // UPDATED: Default to PRIORITY
   status               TaskStatus           @default(NOT_STARTED)
   clientApprovalStatus ClientApprovalStatus @default(PENDING)
   dueDate              DateTime?
@@ -222,15 +217,15 @@ model Task {
   createdBy   User   @relation("TaskCreatedBy", fields: [createdById], references: [id])
 
   // Job Broadcasting Fields
-  jobStatus   JobStatus @default(DRAFT)    // Broadcasting status
-  isPublic    Boolean   @default(false)    // Visible in job board
-  postedAt    DateTime?                    // When pushed to broadcast
-  postedById  String?                      // NEW: Who broadcasted the job
+  jobStatus   JobStatus @default(DRAFT)
+  isPublic    Boolean   @default(false)
+  postedAt    DateTime?
+  postedById  String?
   postedBy    User?     @relation("TaskPostedBy", fields: [postedById], references: [id])
-  deadline    DateTime?                    // Application deadline
+  deadline    DateTime?
 
   // Worker Payment/Earnings Fields
-  paymentAmount       Decimal?            @db.Decimal(10, 2)  // Amount worker earns (NGN)
+  paymentAmount       Decimal?            @db.Decimal(10, 2)
   workerPaymentStatus WorkerPaymentStatus @default(PENDING)
   paidAt              DateTime?
   paidById            String?
@@ -239,7 +234,7 @@ model Task {
   // Relations
   comments     TaskComment[]
   updates      TaskUpdate[]
-  applications JobApplication[]  // Workers who applied
+  applications JobApplication[]
 
   @@index([jobStatus, isPublic])
   @@index([assignedToId, status])
@@ -261,7 +256,7 @@ model JobApplication {
   worker          User              @relation("WorkerApplications", fields: [workerId], references: [id])
   
   status          ApplicationStatus @default(PENDING)
-  coverNote       String?           @db.Text      // Worker's pitch/message
+  coverNote       String?           @db.Text
   
   appliedAt       DateTime          @default(now())
   reviewedAt      DateTime?
@@ -269,13 +264,81 @@ model JobApplication {
   reviewedBy      User?             @relation("ApplicationReviewer", fields: [reviewedById], references: [id])
   rejectionReason String?
 
-  @@unique([taskId, workerId])  // One application per worker per task
+  @@unique([taskId, workerId])
   @@index([taskId, status])
   @@index([workerId, status])
 }
 
 // ============================================
-// PLATFORM SETTINGS MODEL
+// PACKAGE MODEL (NEW)
+// ============================================
+
+model Package {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  displayName String              // e.g., "AMBO CLASSIC"
+  description String?  @db.Text
+  price       Decimal  @db.Decimal(10, 2)
+  currency    String   @default("USD")
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  
+  // Custom features/items not from services (JSON array of strings)
+  customFeatures Json?
+  
+  // Relations
+  services    PackageService[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([isActive, sortOrder])
+}
+
+// ============================================
+// SERVICE MODEL (NEW)
+// ============================================
+
+model Service {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  price       Decimal  @db.Decimal(10, 2)
+  currency    String   @default("USD")
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  
+  // Relations
+  packages    PackageService[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([isActive, sortOrder])
+}
+
+// ============================================
+// PACKAGE-SERVICE JUNCTION (NEW)
+// ============================================
+
+model PackageService {
+  id         String   @id @default(cuid())
+  
+  packageId  String
+  package    Package  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  
+  serviceId  String
+  service    Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  
+  createdAt  DateTime @default(now())
+  
+  @@unique([packageId, serviceId])
+  @@index([packageId])
+  @@index([serviceId])
+}
+
+// ============================================
+// PLATFORM SETTINGS MODEL (UPDATED)
 // ============================================
 
 model PlatformSettings {
@@ -286,6 +349,12 @@ model PlatformSettings {
   supportEmail     String?
   supportInstagram String?
   supportPhone     String?
+  
+  // NEW: Legal Documents (Rich Text/HTML)
+  termsAndConditions String? @db.Text
+  privacyPolicy      String? @db.Text
+  termsUpdatedAt     DateTime?
+  privacyUpdatedAt   DateTime?
   
   updatedAt        DateTime @default(now()) @updatedAt
 }

@@ -82,8 +82,9 @@ export async function getPlatformSettings(req: AuthedRequest, res: Response) {
 
 /**
  * PATCH /api/settings
- * Update platform settings (support channels)
+ * Update platform settings (support channels + legal documents)
  * SUPER_ADMIN only
+ * V3: Now also supports termsAndConditions and privacyPolicy
  */
 export async function updatePlatformSettings(req: AuthedRequest, res: Response) {
   try {
@@ -95,22 +96,45 @@ export async function updatePlatformSettings(req: AuthedRequest, res: Response) 
       return fail(res, "Forbidden: Only super admins can update platform settings", 403);
     }
 
-    const { supportWhatsapp, supportEmail, supportInstagram, supportPhone } = req.body;
+    const { 
+      supportWhatsapp, 
+      supportEmail, 
+      supportInstagram, 
+      supportPhone,
+      // V3: Legal documents
+      termsAndConditions,
+      privacyPolicy,
+    } = req.body;
+
+    // Build update data
+    const updateData: any = {};
+    
+    // Support channels (original)
+    if (supportWhatsapp !== undefined) updateData.supportWhatsapp = supportWhatsapp;
+    if (supportEmail !== undefined) updateData.supportEmail = supportEmail;
+    if (supportInstagram !== undefined) updateData.supportInstagram = supportInstagram;
+    if (supportPhone !== undefined) updateData.supportPhone = supportPhone;
+
+    // V3: Legal documents with timestamps
+    if (termsAndConditions !== undefined) {
+      updateData.termsAndConditions = termsAndConditions;
+      updateData.termsUpdatedAt = new Date();
+    }
+    if (privacyPolicy !== undefined) {
+      updateData.privacyPolicy = privacyPolicy;
+      updateData.privacyUpdatedAt = new Date();
+    }
 
     const settings = await prisma.platformSettings.upsert({
       where: { id: "default" },
-      update: {
-        supportWhatsapp: supportWhatsapp ?? undefined,
-        supportEmail: supportEmail ?? undefined,
-        supportInstagram: supportInstagram ?? undefined,
-        supportPhone: supportPhone ?? undefined,
-      },
+      update: updateData,
       create: {
         id: "default",
         supportWhatsapp,
         supportEmail,
         supportInstagram,
         supportPhone,
+        ...updateData,
       },
     });
 
@@ -137,6 +161,202 @@ export async function updatePlatformSettings(req: AuthedRequest, res: Response) 
   } catch (err: any) {
     console.error("updatePlatformSettings error:", err);
     return fail(res, "Failed to update platform settings", 500);
+  }
+}
+
+// ============================================
+// V3: LEGAL DOCUMENTS (NEW)
+// ============================================
+
+/**
+ * GET /api/settings/legal
+ * Get both terms and privacy policy (Public - no auth required)
+ */
+export async function getLegalDocuments(req: AuthedRequest, res: Response) {
+  try {
+    const settings = await prisma.platformSettings.findUnique({
+      where: { id: "default" },
+      select: {
+        termsAndConditions: true,
+        privacyPolicy: true,
+        termsUpdatedAt: true,
+        privacyUpdatedAt: true,
+      },
+    });
+
+    if (!settings) {
+      return success(res, {
+        termsAndConditions: null,
+        privacyPolicy: null,
+        termsUpdatedAt: null,
+        privacyUpdatedAt: null,
+      });
+    }
+
+    return success(res, settings);
+  } catch (err: any) {
+    console.error("getLegalDocuments error:", err);
+    return fail(res, "Failed to fetch legal documents", 500);
+  }
+}
+
+/**
+ * GET /api/settings/terms
+ * Get terms and conditions only (Public - no auth required)
+ */
+export async function getTermsAndConditions(req: AuthedRequest, res: Response) {
+  try {
+    const settings = await prisma.platformSettings.findUnique({
+      where: { id: "default" },
+      select: {
+        termsAndConditions: true,
+        termsUpdatedAt: true,
+      },
+    });
+
+    return success(res, {
+      content: settings?.termsAndConditions || null,
+      updatedAt: settings?.termsUpdatedAt || null,
+    });
+  } catch (err: any) {
+    console.error("getTermsAndConditions error:", err);
+    return fail(res, "Failed to fetch terms and conditions", 500);
+  }
+}
+
+/**
+ * GET /api/settings/privacy
+ * Get privacy policy only (Public - no auth required)
+ */
+export async function getPrivacyPolicy(req: AuthedRequest, res: Response) {
+  try {
+    const settings = await prisma.platformSettings.findUnique({
+      where: { id: "default" },
+      select: {
+        privacyPolicy: true,
+        privacyUpdatedAt: true,
+      },
+    });
+
+    return success(res, {
+      content: settings?.privacyPolicy || null,
+      updatedAt: settings?.privacyUpdatedAt || null,
+    });
+  } catch (err: any) {
+    console.error("getPrivacyPolicy error:", err);
+    return fail(res, "Failed to fetch privacy policy", 500);
+  }
+}
+
+/**
+ * PATCH /api/settings/terms
+ * Update terms and conditions (SUPER_ADMIN only)
+ */
+export async function updateTermsAndConditions(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    if (req.user.role !== "SUPER_ADMIN") {
+      return fail(res, "Forbidden: Only super admins can update terms", 403);
+    }
+
+    const { content } = req.body;
+
+    if (content === undefined) {
+      return fail(res, "Content is required", 400);
+    }
+
+    const settings = await prisma.platformSettings.upsert({
+      where: { id: "default" },
+      update: {
+        termsAndConditions: content,
+        termsUpdatedAt: new Date(),
+      },
+      create: {
+        id: "default",
+        termsAndConditions: content,
+        termsUpdatedAt: new Date(),
+      },
+    });
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        actionType: "TERMS_UPDATED",
+        entityType: "PLATFORM_SETTINGS",
+        entityId: "default",
+        metaJson: {
+          contentLength: content?.length || 0,
+        } as any,
+      },
+    });
+
+    return success(res, {
+      message: "Terms and conditions updated successfully",
+      updatedAt: settings.termsUpdatedAt,
+    });
+  } catch (err: any) {
+    console.error("updateTermsAndConditions error:", err);
+    return fail(res, "Failed to update terms and conditions", 500);
+  }
+}
+
+/**
+ * PATCH /api/settings/privacy
+ * Update privacy policy (SUPER_ADMIN only)
+ */
+export async function updatePrivacyPolicy(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    if (req.user.role !== "SUPER_ADMIN") {
+      return fail(res, "Forbidden: Only super admins can update privacy policy", 403);
+    }
+
+    const { content } = req.body;
+
+    if (content === undefined) {
+      return fail(res, "Content is required", 400);
+    }
+
+    const settings = await prisma.platformSettings.upsert({
+      where: { id: "default" },
+      update: {
+        privacyPolicy: content,
+        privacyUpdatedAt: new Date(),
+      },
+      create: {
+        id: "default",
+        privacyPolicy: content,
+        privacyUpdatedAt: new Date(),
+      },
+    });
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        actionType: "PRIVACY_POLICY_UPDATED",
+        entityType: "PLATFORM_SETTINGS",
+        entityId: "default",
+        metaJson: {
+          contentLength: content?.length || 0,
+        } as any,
+      },
+    });
+
+    return success(res, {
+      message: "Privacy policy updated successfully",
+      updatedAt: settings.privacyUpdatedAt,
+    });
+  } catch (err: any) {
+    console.error("updatePrivacyPolicy error:", err);
+    return fail(res, "Failed to update privacy policy", 500);
   }
 }
 

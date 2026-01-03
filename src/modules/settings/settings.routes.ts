@@ -6,6 +6,12 @@ import {
   getSupportChannels,
   getPlatformSettings,
   updatePlatformSettings,
+  // V3: Legal documents
+  getLegalDocuments,
+  getTermsAndConditions,
+  getPrivacyPolicy,
+  updateTermsAndConditions,
+  updatePrivacyPolicy,
   // Admin management
   createAdmin,
   getAdmins,
@@ -36,23 +42,33 @@ router.get(
 );
 
 // ============================================
-// PLATFORM SETTINGS (SUPER_ADMIN only)
+// V3: LEGAL DOCUMENTS (Public read)
+// IMPORTANT: These specific routes MUST come before generic "/" routes
 // ============================================
 
-// GET /api/settings - Get all platform settings
-router.get(
-  "/",
+// GET /api/settings/legal - Get both terms and privacy (Public)
+router.get("/legal", getLegalDocuments);
+
+// GET /api/settings/terms - Get terms only (Public)
+router.get("/terms", getTermsAndConditions);
+
+// GET /api/settings/privacy - Get privacy only (Public)
+router.get("/privacy", getPrivacyPolicy);
+
+// PATCH /api/settings/terms - Update terms (SUPER_ADMIN only)
+router.patch(
+  "/terms",
   authRequired,
   requireRole("SUPER_ADMIN"),
-  getPlatformSettings
+  updateTermsAndConditions
 );
 
-// PATCH /api/settings - Update platform settings
+// PATCH /api/settings/privacy - Update privacy (SUPER_ADMIN only)
 router.patch(
-  "/",
+  "/privacy",
   authRequired,
   requireRole("SUPER_ADMIN"),
-  updatePlatformSettings
+  updatePrivacyPolicy
 );
 
 // ============================================
@@ -161,6 +177,27 @@ router.post(
   authRequired,
   requireRole("ADMIN", "SUPER_ADMIN"),
   adminJoinChat
+);
+
+// ============================================
+// PLATFORM SETTINGS (SUPER_ADMIN only)
+// IMPORTANT: These generic routes MUST come AFTER specific routes
+// ============================================
+
+// GET /api/settings - Get all platform settings
+router.get(
+  "/",
+  authRequired,
+  requireRole("SUPER_ADMIN"),
+  getPlatformSettings
+);
+
+// PATCH /api/settings - Update platform settings
+router.patch(
+  "/",
+  authRequired,
+  requireRole("SUPER_ADMIN"),
+  updatePlatformSettings
 );
 
 export default router;

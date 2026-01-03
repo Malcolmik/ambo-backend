@@ -169,17 +169,24 @@ export async function getTask(req: AuthedRequest, res: Response) {
 /**
  * POST /tasks
  * SUPER_ADMIN and ADMIN can create tasks, assign worker & client
+ * 
+ * V3 UPDATE: Auto-priority logic
+ * - If linked to a contract = CRITICAL (package work)
+ * - If standalone (no contract) = PRIORITY
+ * - Can override with forcePriority: true
  */
 export async function createTask(req: AuthedRequest, res: Response) {
   try {
     const {
       title,
       description,
-      priority,
+      priority,        // Will be overridden by auto-logic unless forcePriority is true
       dueDate,
       clientId,
+      contractId,      // V3: Can be linked directly to a contract
       assignedToId,
       requiresApproval,
+      forcePriority,   // V3: If true, use the provided priority instead of auto
     } = req.body;
 
     // validate clientId if provided
@@ -190,6 +197,18 @@ export async function createTask(req: AuthedRequest, res: Response) {
       });
       if (!clientExists) {
         return fail(res, "Invalid clientId: client does not exist", 400);
+      }
+    }
+
+    // V3: Validate contractId if provided
+    let linkedContract = null;
+    if (contractId) {
+      linkedContract = await prisma.contract.findUnique({
+        where: { id: contractId },
+        select: { id: true, clientId: true },
+      });
+      if (!linkedContract) {
+        return fail(res, "Invalid contractId: contract does not exist", 400);
       }
     }
 
@@ -204,14 +223,33 @@ export async function createTask(req: AuthedRequest, res: Response) {
       }
     }
 
+    // V3: AUTO-PRIORITY LOGIC
+    // If linked to a contract = CRITICAL (package work)
+    // If standalone (no contract) = PRIORITY
+    let taskPriority = priority || "PRIORITY"; // Default for standalone
+    
+    if (!forcePriority) {
+      if (contractId || linkedContract) {
+        // Linked to a contract = CRITICAL
+        taskPriority = "CRITICAL";
+      } else if (!priority) {
+        // No priority specified and no contract = PRIORITY
+        taskPriority = "PRIORITY";
+      }
+    }
+
+    // V3: Determine clientId - use contract's client if contractId provided but no clientId
+    const finalClientId = clientId || linkedContract?.clientId || null;
+
     // create task
     const created = await prisma.task.create({
       data: {
         title,
         description,
-        priority,
+        priority: taskPriority,
         dueDate: dueDate ? new Date(dueDate) : null,
-        clientId: clientId || null,
+        clientId: finalClientId,
+        contractId: contractId || null,
         assignedToId: assignedToId || null,
         requiresApproval: !!requiresApproval,
         createdById: req.user!.id,
@@ -242,8 +280,13 @@ export async function createTask(req: AuthedRequest, res: Response) {
  * - SUPER_ADMIN and ADMIN can update anything
  * - WORKER can only update tasks assigned to them
  *
+ * V3 UPDATE: Auto-priority when contractId changes
+ * - When contractId is added = auto-set CRITICAL
+ * - When contractId is removed = auto-set PRIORITY
+ * - Can override with forcePriority: true
+ *
  * Supports updating:
- *   status, title, description, priority, dueDate, assignedToId
+ *   status, title, description, priority, dueDate, assignedToId, contractId
  *
  * Also logs status changes into taskUpdate + auditLog.
  */
@@ -257,6 +300,8 @@ export async function updateTask(req: AuthedRequest, res: Response) {
       priority,
       dueDate,
       assignedToId,
+      contractId,      // V3: Can link/unlink contract
+      forcePriority,   // V3: Override auto-priority
     } = req.body;
 
     // 1. Load current task
@@ -295,6 +340,36 @@ export async function updateTask(req: AuthedRequest, res: Response) {
       nextAssignedToId = assignedToId;
     }
 
+    // V3: Handle contractId changes and auto-priority
+    let nextPriority = priority ?? task.priority;
+    let nextContractId = task.contractId;
+
+    if (contractId !== undefined && isAdmin) {
+      // Validate contractId if provided
+      if (contractId) {
+        const contractExists = await prisma.contract.findUnique({
+          where: { id: contractId },
+          select: { id: true },
+        });
+        if (!contractExists) {
+          return fail(res, "Invalid contractId: contract does not exist", 400);
+        }
+      }
+
+      nextContractId = contractId;
+      
+      // V3: Auto-update priority unless forcePriority is set
+      if (!forcePriority && !priority) {
+        if (contractId) {
+          // Linking to contract = CRITICAL
+          nextPriority = "CRITICAL";
+        } else {
+          // Unlinking from contract = PRIORITY
+          nextPriority = "PRIORITY";
+        }
+      }
+    }
+
     // 4. Build update payload safely
     const updated = await prisma.task.update({
       where: { id },
@@ -302,9 +377,10 @@ export async function updateTask(req: AuthedRequest, res: Response) {
         status: status ?? task.status,
         title: title ?? task.title,
         description: description ?? task.description,
-        priority: priority ?? task.priority,
+        priority: nextPriority,
         dueDate: dueDate ? new Date(dueDate) : task.dueDate,
         assignedToId: nextAssignedToId,
+        contractId: nextContractId,
       },
     });
 

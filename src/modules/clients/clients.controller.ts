@@ -197,7 +197,7 @@ export async function assignClientToWorker(req: AuthedRequest, res: Response) {
       data: {
         title: `Manage Client: ${client.companyName}`,
         description: `You have been assigned to manage account operations for ${client.companyName}. Please review their contract and onboard them.`,
-        priority: "HIGH",
+        priority: "priority",
         // status: "PENDING", // REMOVED: Using database default (likely "TODO" or "OPEN") to avoid type mismatch
         clientId: clientId,
         assignedToId: workerId,
