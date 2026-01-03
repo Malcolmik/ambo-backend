@@ -6,7 +6,7 @@ import { success, fail } from "../../utils/response";
 /**
  * GET /tasks
  * Role behavior:
- *  - SUPER_ADMIN: all tasks
+ *  - SUPER_ADMIN, ADMIN: all tasks
  *  - WORKER: tasks assigned to me
  *  - CLIENT_VIEWER: tasks for my company
  */
@@ -16,7 +16,8 @@ export async function listTasks(req: AuthedRequest, res: Response) {
 
   if (!role || !userId) return fail(res, "Unauthorized", 401);
 
-  if (role === "SUPER_ADMIN") {
+  // SUPER_ADMIN and ADMIN see all tasks
+  if (role === "SUPER_ADMIN" || role === "ADMIN") {
     const all = await prisma.task.findMany({
       include: {
         client: true,
@@ -146,7 +147,8 @@ export async function getTask(req: AuthedRequest, res: Response) {
 
   if (!task) return fail(res, "Task not found", 404);
 
-  if (role === "SUPER_ADMIN") return success(res, task);
+  // SUPER_ADMIN and ADMIN can see all tasks
+  if (role === "SUPER_ADMIN" || role === "ADMIN") return success(res, task);
 
   if (role === "WORKER") {
     if (task.assignedToId === userId) return success(res, task);
@@ -166,7 +168,7 @@ export async function getTask(req: AuthedRequest, res: Response) {
 
 /**
  * POST /tasks
- * SUPER_ADMIN creates a task, assigns worker & client
+ * SUPER_ADMIN and ADMIN can create tasks, assign worker & client
  */
 export async function createTask(req: AuthedRequest, res: Response) {
   try {
@@ -237,7 +239,7 @@ export async function createTask(req: AuthedRequest, res: Response) {
 /**
  * PATCH /tasks/:id
  * General update to fields on a task.
- * - SUPER_ADMIN can update anything
+ * - SUPER_ADMIN and ADMIN can update anything
  * - WORKER can only update tasks assigned to them
  *
  * Supports updating:
@@ -265,8 +267,8 @@ export async function updateTask(req: AuthedRequest, res: Response) {
       return fail(res, "Task not found", 404);
     }
 
-    // 2. Permission check
-    const isAdmin = req.user?.role === "SUPER_ADMIN";
+    // 2. Permission check - ADMIN also allowed
+    const isAdmin = req.user?.role === "SUPER_ADMIN" || req.user?.role === "ADMIN";
     const isAssignedWorker = req.user?.id === task.assignedToId;
 
     if (!isAdmin && !isAssignedWorker) {
@@ -276,9 +278,9 @@ export async function updateTask(req: AuthedRequest, res: Response) {
     // 3. Validate reassignment if changing assignedToId
     let nextAssignedToId = task.assignedToId;
     if (assignedToId && assignedToId !== task.assignedToId) {
-      // only SUPER_ADMIN can reassign
+      // only SUPER_ADMIN or ADMIN can reassign
       if (!isAdmin) {
-        return fail(res, "Only SUPER_ADMIN can reassign tasks", 403);
+        return fail(res, "Only SUPER_ADMIN or ADMIN can reassign tasks", 403);
       }
 
       const workerExists = await prisma.user.findUnique({
@@ -351,9 +353,10 @@ export async function updateTaskStatus(req: AuthedRequest, res: Response) {
   const task = await prisma.task.findUnique({ where: { id } });
   if (!task) return fail(res, "Task not found", 404);
 
-  // only SUPER_ADMIN or assigned worker can push status
+  // SUPER_ADMIN, ADMIN, or assigned worker can push status
   if (
     req.user?.role !== "SUPER_ADMIN" &&
+    req.user?.role !== "ADMIN" &&
     req.user?.id !== task.assignedToId
   ) {
     return fail(res, "Forbidden", 403);
@@ -456,9 +459,9 @@ export async function acceptTask(req: AuthedRequest, res: Response) {
       });
     }
 
-    // Notify admin
+    // Notify admin (both SUPER_ADMIN and ADMIN)
     const admins = await prisma.user.findMany({
-      where: { role: "SUPER_ADMIN", active: true },
+      where: { role: { in: ["SUPER_ADMIN", "ADMIN"] }, active: true },
       select: { id: true },
     });
 
@@ -557,9 +560,9 @@ export async function declineTask(req: AuthedRequest, res: Response) {
       },
     });
 
-    // Notify all admins about the decline
+    // Notify all admins about the decline (both SUPER_ADMIN and ADMIN)
     const admins = await prisma.user.findMany({
-      where: { role: "SUPER_ADMIN", active: true },
+      where: { role: { in: ["SUPER_ADMIN", "ADMIN"] }, active: true },
       select: { id: true },
     });
 
@@ -671,9 +674,9 @@ export async function completeTask(req: AuthedRequest, res: Response) {
       });
     }
 
-    // Notify admin
+    // Notify admin (both SUPER_ADMIN and ADMIN)
     const admins = await prisma.user.findMany({
-      where: { role: "SUPER_ADMIN", active: true },
+      where: { role: { in: ["SUPER_ADMIN", "ADMIN"] }, active: true },
       select: { id: true },
     });
 

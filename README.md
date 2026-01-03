@@ -415,3 +415,104 @@ Create a new page at src/pages/admin/BroadcastHistory.tsx for SUPER_ADMIN only:
 - [ ] When admin broadcasts job, postedById is set
 - [ ] Existing broadcasted jobs have postedById backfilled to createdById
 - [ ] postedBy relation works in queries
+
+
+# AMBO V2 Controller Patch - ADMIN Role Permissions Fix
+
+## Problem
+The ADMIN role was getting "Access denied. You don't have permission for this action." errors on:
+- Clients page (`/admin/clients`)
+- Contracts page (`/admin/contracts`)
+- Tasks page (`/admin/tasks`)
+
+## Root Cause
+The **controller functions** had internal role checks that only allowed `SUPER_ADMIN`, but did not include the new `ADMIN` role added in V2.
+
+**Note:** The route files had been updated with `requireRole("SUPER_ADMIN", "ADMIN")` but the controller functions inside were doing additional role checks that still only allowed `SUPER_ADMIN`.
+
+## Files Changed
+
+### 1. `src/modules/clients/clients.controller.ts`
+
+| Function | Change |
+|----------|--------|
+| `listClients()` | Added `ADMIN` to role check (line 11) |
+| `getClients()` | Changed from `!== "SUPER_ADMIN"` to `!== "SUPER_ADMIN" && !== "ADMIN"` |
+
+### 2. `src/modules/contracts/contracts.controller.ts`
+
+| Function | Change |
+|----------|--------|
+| `getAllContracts()` | Changed from `!== "SUPER_ADMIN"` to `!== "SUPER_ADMIN" && !== "ADMIN"` |
+| `myContracts()` | Added `ADMIN` to role check alongside `SUPER_ADMIN` |
+| `getContract()` | Added `ADMIN` to authorization check |
+| `getContractTasks()` | Added `ADMIN` to authorization check |
+| `updateContractStatus()` | Changed from `!== "SUPER_ADMIN"` to `!== "SUPER_ADMIN" && !== "ADMIN"` |
+
+### 3. `src/modules/tasks/tasks.controller.ts`
+
+| Function | Change |
+|----------|--------|
+| `listTasks()` | Added `ADMIN` to role check alongside `SUPER_ADMIN` |
+| `getTask()` | Added `ADMIN` to role check alongside `SUPER_ADMIN` |
+| `updateTask()` | Changed `isAdmin` check to include `ADMIN` role |
+| `updateTaskStatus()` | Added `ADMIN` to role check |
+| `acceptTask()` | Added `ADMIN` to notification recipients |
+| `declineTask()` | Added `ADMIN` to notification recipients |
+| `completeTask()` | Added `ADMIN` to notification recipients |
+
+## Deployment Steps
+
+### Step 1: Replace Controller Files
+Copy these files to your backend project, replacing the existing files:
+
+```
+src/modules/clients/clients.controller.ts
+src/modules/contracts/contracts.controller.ts
+src/modules/tasks/tasks.controller.ts
+```
+
+### Step 2: Deploy to Railway
+```bash
+git add .
+git commit -m "Fix ADMIN role permissions in controllers"
+git push
+```
+
+Railway will automatically redeploy.
+
+### Step 3: Verify
+1. Log in as an ADMIN user
+2. Navigate to:
+   - `/admin/clients` - Should load client list
+   - `/admin/contracts` - Should load contracts list
+   - `/admin/tasks` - Should load tasks list
+3. Verify no more "Access denied" errors
+
+## Testing Checklist
+
+- [ ] ADMIN can view Clients page
+- [ ] ADMIN can view Contracts page
+- [ ] ADMIN can view Tasks page
+- [ ] ADMIN can edit client details
+- [ ] ADMIN can update contract status
+- [ ] ADMIN can create new tasks
+- [ ] ADMIN can update task status
+- [ ] SUPER_ADMIN still has full access (no regression)
+- [ ] WORKER permissions unchanged
+- [ ] CLIENT_VIEWER permissions unchanged
+
+## Summary of Role Matrix After Fix
+
+| Resource | SUPER_ADMIN | ADMIN | WORKER | CLIENT_VIEWER |
+|----------|-------------|-------|--------|---------------|
+| View All Clients | ✅ | ✅ | Own only | Own only |
+| Edit Client | ✅ | ✅ | ❌ | ❌ |
+| Delete Client | ✅ | ❌ | ❌ | ❌ |
+| View All Contracts | ✅ | ✅ | Assigned only | Own only |
+| Update Contract Status | ✅ | ✅ | ❌ | ❌ |
+| View All Tasks | ✅ | ✅ | Assigned only | Own only |
+| Create Task | ✅ | ✅ | ❌ | ❌ |
+| Update Task | ✅ | ✅ | Assigned only | ❌ |
+| Admin Users | ✅ | ❌ | ❌ | ❌ |
+| Platform Settings | ✅ | ❌ | ❌ | ❌ |

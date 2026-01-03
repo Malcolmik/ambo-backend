@@ -8,7 +8,8 @@ import { AuthedRequest } from "../../middleware/auth";
  * Lists clients based on the authenticated user's role.
  */
 export async function listClients(req: AuthedRequest, res: Response) {
-  if (req.user?.role === "SUPER_ADMIN") {
+  // SUPER_ADMIN and ADMIN see all clients
+  if (req.user?.role === "SUPER_ADMIN" || req.user?.role === "ADMIN") {
     const all = await prisma.client.findMany({
       include: { tasks: true },
     });
@@ -112,7 +113,7 @@ export async function getClient(req: AuthedRequest, res: Response) {
 }
 
 
-// PATCH /clients/:id (SUPER_ADMIN only)
+// PATCH /clients/:id (SUPER_ADMIN and ADMIN)
 /**
  * Updates a client record.
  */
@@ -240,11 +241,12 @@ export async function assignClientToWorker(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/clients/all (Helper for dropdowns)
- * List all clients for assignment
+ * List all clients for assignment (SUPER_ADMIN and ADMIN)
  */
 export async function getClients(req: AuthedRequest, res: Response) {
     try {
-        if (req.user?.role !== "SUPER_ADMIN") {
+        // Allow both SUPER_ADMIN and ADMIN
+        if (req.user?.role !== "SUPER_ADMIN" && req.user?.role !== "ADMIN") {
              return fail(res, "Forbidden", 403);
         }
         

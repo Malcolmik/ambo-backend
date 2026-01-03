@@ -79,7 +79,7 @@ export async function createContract(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/contracts
- * Get all contracts (SUPER_ADMIN only)
+ * Get all contracts (SUPER_ADMIN and ADMIN)
  */
 export async function getAllContracts(req: AuthedRequest, res: Response) {
   try {
@@ -87,8 +87,8 @@ export async function getAllContracts(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    // Only SUPER_ADMIN can view all contracts
-    if (req.user.role !== "SUPER_ADMIN") {
+    // Allow both SUPER_ADMIN and ADMIN to view all contracts
+    if (req.user.role !== "SUPER_ADMIN" && req.user.role !== "ADMIN") {
       return fail(res, "Forbidden", 403);
     }
 
@@ -112,7 +112,7 @@ export async function getAllContracts(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/contracts/my
- * Get contracts for the authenticated user (CLIENT_VIEWER, SUPER_ADMIN, or WORKER)
+ * Get contracts for the authenticated user (CLIENT_VIEWER, SUPER_ADMIN, ADMIN, or WORKER)
  * Now includes task/worker information and questionnaire status
  */
 export async function myContracts(req: AuthedRequest, res: Response) {
@@ -121,7 +121,8 @@ export async function myContracts(req: AuthedRequest, res: Response) {
       return fail(res, "Unauthorized", 401);
     }
 
-    if (req.user.role === "SUPER_ADMIN") {
+    // SUPER_ADMIN and ADMIN see all contracts with full details
+    if (req.user.role === "SUPER_ADMIN" || req.user.role === "ADMIN") {
       // Super admin sees all contracts with full details
       const contracts = await prisma.contract.findMany({
         include: {
@@ -434,7 +435,7 @@ export async function getContract(req: AuthedRequest, res: Response) {
       return fail(res, "Contract not found", 404);
     }
 
-    // Check authorization
+    // Check authorization - ADMIN also allowed
     if (req.user.role === "CLIENT_VIEWER") {
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
@@ -443,7 +444,7 @@ export async function getContract(req: AuthedRequest, res: Response) {
       if (!client || client.id !== contract.clientId) {
         return fail(res, "Forbidden", 403);
       }
-    } else if (req.user.role !== "SUPER_ADMIN") {
+    } else if (req.user.role !== "SUPER_ADMIN" && req.user.role !== "ADMIN") {
       // Allow WORKER if they have tasks for this client
       if (req.user.role === "WORKER") {
         const hasTask = await prisma.task.findFirst({
@@ -490,7 +491,7 @@ export async function getContractTasks(req: AuthedRequest, res: Response) {
       return fail(res, "Contract not found", 404);
     }
 
-    // Check authorization
+    // Check authorization - ADMIN also allowed
     if (req.user.role === "CLIENT_VIEWER") {
       const client = await prisma.client.findFirst({
         where: { linkedUserId: req.user.id },
@@ -499,7 +500,7 @@ export async function getContractTasks(req: AuthedRequest, res: Response) {
       if (!client || client.id !== contract.clientId) {
         return fail(res, "Forbidden", 403);
       }
-    } else if (req.user.role !== "SUPER_ADMIN") {
+    } else if (req.user.role !== "SUPER_ADMIN" && req.user.role !== "ADMIN") {
        // Allow WORKER if they have tasks for this client
        if (req.user.role === "WORKER") {
         const hasTask = await prisma.task.findFirst({
@@ -541,14 +542,15 @@ export async function getContractTasks(req: AuthedRequest, res: Response) {
 
 /**
  * PATCH /api/contracts/:id/status
- * Update contract status (SUPER_ADMIN only)
+ * Update contract status (SUPER_ADMIN and ADMIN)
  */
 export async function updateContractStatus(req: AuthedRequest, res: Response) {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    if (!req.user || req.user.role !== "SUPER_ADMIN") {
+    // Allow both SUPER_ADMIN and ADMIN
+    if (!req.user || (req.user.role !== "SUPER_ADMIN" && req.user.role !== "ADMIN")) {
       return fail(res, "Forbidden", 403);
     }
 
@@ -614,7 +616,7 @@ export async function getContractChatInfo(req: AuthedRequest, res: Response) {
     const role = user.role;
 
     // 🔒 Authorisation:
-    // SUPER_ADMIN: always allowed
+    // SUPER_ADMIN and ADMIN: always allowed
     if (role === "CLIENT_VIEWER") {
       // Must be the linked user for this client
       const client = contract.client;
@@ -636,7 +638,7 @@ export async function getContractChatInfo(req: AuthedRequest, res: Response) {
       }
     }
 
-    // At this point: SUPER_ADMIN OR allowed worker OR allowed client
+    // At this point: SUPER_ADMIN OR ADMIN OR allowed worker OR allowed client
 
     // Ensure current user exists in Sendbird
     await ensureSendbirdUser({
