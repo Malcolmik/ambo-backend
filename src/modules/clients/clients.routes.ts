@@ -21,7 +21,7 @@ router.get("/", authRequired, listClients);
 router.get(
   "/all-for-assign", 
   authRequired, 
-  requireRole("SUPER_ADMIN"), 
+  requireRole("SUPER_ADMIN", "ADMIN"), 
   getClients
 );
 
@@ -29,7 +29,7 @@ router.get(
 router.post(
   "/assign",
   authRequired,
-  requireRole("SUPER_ADMIN"),
+  requireRole("SUPER_ADMIN", "ADMIN"),
   assignClientToWorker
 );
 
@@ -37,7 +37,7 @@ router.post(
 router.post(
   "/",
   authRequired,
-  requireRole("SUPER_ADMIN"),
+  requireRole("SUPER_ADMIN", "ADMIN"),
   createClient
 );
 
@@ -46,11 +46,11 @@ router.post(
 // (If this was above 'all-for-assign', it would catch 'all-for-assign' as an ID)
 router.get("/:id", authRequired, getClient);
 
-// PATCH /api/clients/:id
+// PATCH /api/clients/:id - UPDATED: Added ADMIN role
 router.patch(
   "/:id",
   authRequired,
-  requireRole("SUPER_ADMIN"),
+  requireRole("SUPER_ADMIN", "ADMIN"),
   updateClient
 );
 

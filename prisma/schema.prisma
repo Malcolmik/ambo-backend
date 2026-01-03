@@ -119,7 +119,8 @@ model User {
   clients       Client[]       @relation("ClientLinkedUser")
   tasksAssigned Task[]         @relation("TaskAssignedTo")
   tasksCreated  Task[]         @relation("TaskCreatedBy")
-  tasksPaidBy   Task[]         @relation("TaskPaidBy")      // NEW: Tasks this user marked as paid
+  tasksPosted   Task[]         @relation("TaskPostedBy")     // NEW: Tasks this user broadcasted
+  tasksPaidBy   Task[]         @relation("TaskPaidBy")       // Tasks this user marked as paid
   comments      TaskComment[]
   updates       TaskUpdate[]
   auditLogs     AuditLog[]
@@ -220,13 +221,15 @@ model Task {
   createdById String
   createdBy   User   @relation("TaskCreatedBy", fields: [createdById], references: [id])
 
-  // NEW: Job Broadcasting Fields
+  // Job Broadcasting Fields
   jobStatus   JobStatus @default(DRAFT)    // Broadcasting status
   isPublic    Boolean   @default(false)    // Visible in job board
   postedAt    DateTime?                    // When pushed to broadcast
+  postedById  String?                      // NEW: Who broadcasted the job
+  postedBy    User?     @relation("TaskPostedBy", fields: [postedById], references: [id])
   deadline    DateTime?                    // Application deadline
 
-  // NEW: Worker Payment/Earnings Fields
+  // Worker Payment/Earnings Fields
   paymentAmount       Decimal?            @db.Decimal(10, 2)  // Amount worker earns (NGN)
   workerPaymentStatus WorkerPaymentStatus @default(PENDING)
   paidAt              DateTime?
@@ -236,15 +239,16 @@ model Task {
   // Relations
   comments     TaskComment[]
   updates      TaskUpdate[]
-  applications JobApplication[]  // NEW: Workers who applied
+  applications JobApplication[]  // Workers who applied
 
   @@index([jobStatus, isPublic])
   @@index([assignedToId, status])
   @@index([workerPaymentStatus])
+  @@index([postedById])
 }
 
 // ============================================
-// NEW: JOB APPLICATION MODEL
+// JOB APPLICATION MODEL
 // ============================================
 
 model JobApplication {
@@ -271,7 +275,7 @@ model JobApplication {
 }
 
 // ============================================
-// NEW: PLATFORM SETTINGS MODEL
+// PLATFORM SETTINGS MODEL
 // ============================================
 
 model PlatformSettings {

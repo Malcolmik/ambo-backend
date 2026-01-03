@@ -27,11 +27,11 @@ router.get("/", authRequired, listTasks);
 // Get single task
 router.get("/:id", authRequired, getTask);
 
-// Create task (admin only)
+// Create task - UPDATED: Added ADMIN role
 router.post(
   "/",
   authRequired,
-  requireRole("SUPER_ADMIN"),
+  requireRole("SUPER_ADMIN", "ADMIN"),
   createTask
 );
 

@@ -16,6 +16,8 @@ import {
   rejectApplication,
   reopenJob,
   getAllJobs,
+  // NEW: Super Admin only
+  getBroadcastHistory,
 } from "./jobs.controller";
 
 const router = Router();
@@ -38,6 +40,19 @@ router.get(
   authRequired,
   requireRole("WORKER"),
   getMyApplications
+);
+
+// ============================================
+// SUPER_ADMIN ONLY ROUTES
+// ============================================
+
+// GET /api/jobs/broadcast-history - Get all broadcasted jobs with poster info
+// MUST be before /all and /:taskId routes
+router.get(
+  "/broadcast-history",
+  authRequired,
+  requireRole("SUPER_ADMIN"),
+  getBroadcastHistory
 );
 
 // ============================================

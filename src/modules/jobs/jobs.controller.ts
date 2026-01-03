@@ -487,6 +487,7 @@ export async function getMyApplications(req: AuthedRequest, res: Response) {
  * POST /api/jobs/:taskId/broadcast
  * Push a task to the job board (make it available for applications)
  * ADMIN, SUPER_ADMIN only
+ * UPDATED: Now sets postedById to track who broadcasted
  */
 export async function pushToBroadcast(req: AuthedRequest, res: Response) {
   try {
@@ -532,7 +533,7 @@ export async function pushToBroadcast(req: AuthedRequest, res: Response) {
       return fail(res, "Cannot broadcast a task that is already assigned", 400);
     }
 
-    // Update task to OPEN
+    // Update task to OPEN - NOW INCLUDES postedById
     const updatedTask = await prisma.$transaction(async (tx) => {
       const updated = await tx.task.update({
         where: { id: taskId },
@@ -542,6 +543,7 @@ export async function pushToBroadcast(req: AuthedRequest, res: Response) {
           paymentAmount: amount,
           deadline: deadline ? new Date(deadline) : null,
           postedAt: new Date(),
+          postedById: req.user!.id,  // NEW: Track who broadcasted
         },
         include: {
           client: { select: { companyName: true } },
@@ -576,6 +578,7 @@ export async function pushToBroadcast(req: AuthedRequest, res: Response) {
             jobTitle: task.title,
             paymentAmount: amount,
             deadline: deadline || null,
+            postedById: req.user!.id,
           },
         },
       });
@@ -1199,5 +1202,145 @@ export async function getAllJobs(req: AuthedRequest, res: Response) {
   } catch (err: any) {
     console.error("getAllJobs error:", err);
     return fail(res, "Failed to fetch jobs", 500);
+  }
+}
+
+// ============================================
+// NEW: SUPER_ADMIN ONLY - BROADCAST HISTORY
+// ============================================
+
+/**
+ * GET /api/jobs/broadcast-history
+ * Get complete history of all broadcasted jobs
+ * SUPER_ADMIN only - shows who posted each job
+ */
+export async function getBroadcastHistory(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    // SUPER_ADMIN only
+    if (req.user.role !== "SUPER_ADMIN") {
+      return fail(res, "Forbidden: Only super admins can view broadcast history", 403);
+    }
+
+    const { status, postedById, startDate, endDate } = req.query;
+
+    // Build where clause - only jobs that have been broadcasted (not DRAFT)
+    const where: Prisma.TaskWhereInput = {
+      jobStatus: { not: "DRAFT" },
+      postedAt: { not: null },
+    };
+
+    // Filter by job status
+    if (status && typeof status === "string") {
+      where.jobStatus = status as any;
+    }
+
+    // Filter by who posted
+    if (postedById && typeof postedById === "string") {
+      where.postedById = postedById;
+    }
+
+    // Filter by date range
+    if (startDate && typeof startDate === "string") {
+      where.postedAt = {
+        ...(where.postedAt as object || {}),
+        gte: new Date(startDate),
+      };
+    }
+    if (endDate && typeof endDate === "string") {
+      where.postedAt = {
+        ...(where.postedAt as object || {}),
+        lte: new Date(endDate),
+      };
+    }
+
+    const jobs = await prisma.task.findMany({
+      where,
+      include: {
+        client: {
+          select: {
+            id: true,
+            companyName: true,
+          },
+        },
+        postedBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+          },
+        },
+        assignedTo: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        _count: {
+          select: {
+            applications: true,
+          },
+        },
+      },
+      orderBy: { postedAt: "desc" },
+    });
+
+    const transformedJobs = jobs.map((job) => ({
+      id: job.id,
+      title: job.title,
+      description: job.description,
+      priority: job.priority,
+      jobStatus: job.jobStatus,
+      taskStatus: job.status,
+      paymentAmount: job.paymentAmount ? Number(job.paymentAmount) : null,
+      workerPaymentStatus: job.workerPaymentStatus,
+      deadline: job.deadline,
+      postedAt: job.postedAt,
+      createdAt: job.createdAt,
+      client: job.client,
+      postedBy: job.postedBy,
+      assignedTo: job.assignedTo,
+      totalApplications: job._count.applications,
+    }));
+
+    // Get list of admins who have posted jobs (for filter dropdown)
+    const posters = await prisma.user.findMany({
+      where: {
+        role: { in: ["ADMIN", "SUPER_ADMIN"] },
+        tasksPosted: { some: {} },
+      },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+      },
+    });
+
+    // Summary stats
+    const stats = {
+      totalBroadcasted: transformedJobs.length,
+      open: transformedJobs.filter(j => j.jobStatus === "OPEN").length,
+      reviewing: transformedJobs.filter(j => j.jobStatus === "REVIEWING").length,
+      assigned: transformedJobs.filter(j => j.jobStatus === "ASSIGNED").length,
+      inProgress: transformedJobs.filter(j => j.jobStatus === "IN_PROGRESS").length,
+      completed: transformedJobs.filter(j => j.jobStatus === "COMPLETED").length,
+      cancelled: transformedJobs.filter(j => j.jobStatus === "CANCELLED").length,
+      totalPaymentValue: transformedJobs.reduce((sum, j) => sum + (j.paymentAmount || 0), 0),
+    };
+
+    return success(res, {
+      jobs: transformedJobs,
+      stats,
+      posters,
+      count: transformedJobs.length,
+    });
+  } catch (err: any) {
+    console.error("getBroadcastHistory error:", err);
+    return fail(res, "Failed to fetch broadcast history", 500);
   }
 }

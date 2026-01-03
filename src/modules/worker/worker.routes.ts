@@ -12,6 +12,8 @@ import {
   markPaymentAsPaid,
   bulkMarkPaymentsAsPaid,
   getWorkersEarningsOverview,
+  // NEW: Super Admin export
+  exportAllWorkerPayments,
 } from "./worker.controller";
 
 const router = Router();
@@ -80,12 +82,24 @@ router.post(
   bulkMarkPaymentsAsPaid
 );
 
+// ============================================
+// SUPER_ADMIN ONLY ROUTES
+// ============================================
+
 // GET /api/worker/admin/earnings-overview - Get all workers' earnings (SUPER_ADMIN only)
 router.get(
   "/admin/earnings-overview",
   authRequired,
   requireRole("SUPER_ADMIN"),
   getWorkersEarningsOverview
+);
+
+// GET /api/worker/admin/export-all-payments - Export all workers' payment history (SUPER_ADMIN only)
+router.get(
+  "/admin/export-all-payments",
+  authRequired,
+  requireRole("SUPER_ADMIN"),
+  exportAllWorkerPayments
 );
 
 export default router;

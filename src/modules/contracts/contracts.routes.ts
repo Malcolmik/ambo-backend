@@ -14,16 +14,16 @@ import { requireRole } from "../../middleware/requireRole";
 
 const router = Router();
 
-// POST /api/contracts - Create new contract (SUPER_ADMIN only)
+// POST /api/contracts - Create new contract - UPDATED: Added ADMIN role
 router.post(
   "/",
   authRequired,
-  requireRole("SUPER_ADMIN"),
+  requireRole("SUPER_ADMIN", "ADMIN"),
   createContract  
 );
 
-// GET /api/contracts - Get all contracts (SUPER_ADMIN only)
-router.get("/", authRequired, requireRole("SUPER_ADMIN"), getAllContracts);
+// GET /api/contracts - Get all contracts - UPDATED: Added ADMIN role
+router.get("/", authRequired, requireRole("SUPER_ADMIN", "ADMIN"), getAllContracts);
 
 // GET /api/contracts/my - Get current user's contracts
 router.get("/my", authRequired, myContracts);
@@ -37,11 +37,11 @@ router.get("/:id/tasks", authRequired, getContractTasks);
 // GET /api/contracts/:id/chat - Get Sendbird chat info for contract
 router.get("/:id/chat", authRequired, getContractChatInfo);
 
-// PATCH /api/contracts/:id/status - Update contract status (SUPER_ADMIN only)
+// PATCH /api/contracts/:id/status - Update contract status - UPDATED: Added ADMIN role
 router.patch(
   "/:id/status",
   authRequired,
-  requireRole("SUPER_ADMIN"),
+  requireRole("SUPER_ADMIN", "ADMIN"),
   updateContractStatus
 );
 

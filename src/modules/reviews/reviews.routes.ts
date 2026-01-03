@@ -16,8 +16,8 @@ router.post("/", authRequired, submitReview);
 // Get my reviews
 router.get("/my", authRequired, getMyReviews);
 
-// Get review stats (admin only)
-router.get("/stats", authRequired, requireRole("SUPER_ADMIN"), getReviewStats);
+// Get review stats - UPDATED: Added ADMIN role
+router.get("/stats", authRequired, requireRole("SUPER_ADMIN", "ADMIN"), getReviewStats);
 
 // Get review for specific contract
 router.get("/contract/:contractId", authRequired, getContractReview);

@@ -857,3 +857,182 @@ export async function getWorkersEarningsOverview(req: AuthedRequest, res: Respon
     return fail(res, "Failed to fetch earnings overview", 500);
   }
 }
+
+// ============================================
+// NEW: SUPER_ADMIN EXPORT ALL WORKER PAYMENTS
+// ============================================
+
+/**
+ * GET /api/worker/admin/export-all-payments
+ * Export all workers' payment history as JSON (for CSV export on frontend)
+ * SUPER_ADMIN only - includes worker names and filtering
+ */
+export async function exportAllWorkerPayments(req: AuthedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return fail(res, "Unauthorized", 401);
+    }
+
+    // SUPER_ADMIN only
+    if (req.user.role !== "SUPER_ADMIN") {
+      return fail(res, "Forbidden: Only super admins can export all worker payments", 403);
+    }
+
+    const { workerId, year, month, status } = req.query;
+
+    // Build where clause
+    const where: Prisma.TaskWhereInput = {
+      status: "DONE",
+      paymentAmount: { not: null },
+      assignedToId: { not: null },
+    };
+
+    // Filter by specific worker
+    if (workerId && typeof workerId === "string") {
+      where.assignedToId = workerId;
+    }
+
+    // Filter by year
+    if (year && typeof year === "string") {
+      const yearNum = parseInt(year);
+      if (month && typeof month === "string") {
+        const monthNum = parseInt(month);
+        const startDate = new Date(yearNum, monthNum - 1, 1);
+        const endDate = new Date(yearNum, monthNum, 0, 23, 59, 59);
+        where.updatedAt = {
+          gte: startDate,
+          lte: endDate,
+        };
+      } else {
+        where.updatedAt = {
+          gte: new Date(yearNum, 0, 1),
+          lte: new Date(yearNum, 11, 31, 23, 59, 59),
+        };
+      }
+    }
+
+    // Filter by payment status
+    if (status && typeof status === "string" && status !== "ALL") {
+      where.workerPaymentStatus = status as any;
+    }
+
+    const payments = await prisma.task.findMany({
+      where,
+      orderBy: [
+        { assignedTo: { name: "asc" } },
+        { updatedAt: "desc" },
+      ],
+      select: {
+        id: true,
+        title: true,
+        paymentAmount: true,
+        workerPaymentStatus: true,
+        paidAt: true,
+        updatedAt: true,
+        assignedTo: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        client: {
+          select: {
+            companyName: true,
+          },
+        },
+      },
+    });
+
+    // Transform to export format
+    const exportData = payments.map((p) => ({
+      workerName: p.assignedTo?.name || "Unknown",
+      workerEmail: p.assignedTo?.email || "Unknown",
+      workerId: p.assignedTo?.id || null,
+      taskId: p.id,
+      taskTitle: p.title,
+      clientName: p.client?.companyName || "Unknown",
+      amount: p.paymentAmount ? Number(p.paymentAmount) : 0,
+      currency: "NGN",
+      paymentStatus: p.workerPaymentStatus,
+      completedDate: p.updatedAt.toISOString().split("T")[0],
+      paidDate: p.paidAt ? p.paidAt.toISOString().split("T")[0] : "-",
+    }));
+
+    // Calculate totals
+    const totalPaid = exportData
+      .filter((p) => p.paymentStatus === "PAID")
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const totalPending = exportData
+      .filter((p) => p.paymentStatus === "PENDING")
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const grandTotal = exportData.reduce((sum, p) => sum + p.amount, 0);
+
+    // Group by worker for summary
+    const workerSummary: Record<string, { name: string; email: string; paid: number; pending: number; total: number; tasks: number }> = {};
+    
+    exportData.forEach((p) => {
+      if (!p.workerId) return;
+      
+      if (!workerSummary[p.workerId]) {
+        workerSummary[p.workerId] = {
+          name: p.workerName,
+          email: p.workerEmail,
+          paid: 0,
+          pending: 0,
+          total: 0,
+          tasks: 0,
+        };
+      }
+      
+      workerSummary[p.workerId].total += p.amount;
+      workerSummary[p.workerId].tasks += 1;
+      
+      if (p.paymentStatus === "PAID") {
+        workerSummary[p.workerId].paid += p.amount;
+      } else {
+        workerSummary[p.workerId].pending += p.amount;
+      }
+    });
+
+    const workerSummaryArray = Object.entries(workerSummary)
+      .map(([id, data]) => ({ workerId: id, ...data }))
+      .sort((a, b) => b.total - a.total);
+
+    // Get list of all workers for filter dropdown
+    const allWorkers = await prisma.user.findMany({
+      where: { role: "WORKER" },
+      select: { id: true, name: true, email: true },
+      orderBy: { name: "asc" },
+    });
+
+    return success(res, {
+      exportedAt: new Date().toISOString(),
+      exportedBy: {
+        id: req.user.id,
+        name: req.user.name,
+      },
+      filters: {
+        workerId: workerId || "all",
+        year: year || "all",
+        month: month || "all",
+        status: status || "all",
+      },
+      summary: {
+        totalRecords: exportData.length,
+        totalPaid,
+        totalPending,
+        grandTotal,
+        currency: "NGN",
+      },
+      workerSummary: workerSummaryArray,
+      payments: exportData,
+      workers: allWorkers, // For filter dropdown
+    });
+  } catch (err: any) {
+    console.error("exportAllWorkerPayments error:", err);
+    return fail(res, "Failed to export worker payments", 500);
+  }
+}
