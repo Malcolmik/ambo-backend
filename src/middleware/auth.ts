@@ -11,6 +11,31 @@ export interface AuthedRequest extends Request {
   };
 }
 
+export function optionalAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  const header = req.headers.authorization;
+  
+  // No token = continue without user (public access)
+  if (!header || !header.startsWith("Bearer ")) {
+    return next();
+  }
+  
+  const token = header.split(" ")[1];
+  try {
+    const decoded = jwt.verify(token, env.jwtSecret) as any;
+    req.user = {
+      id: decoded.id,
+      role: decoded.role,
+      email: decoded.email,
+      name: decoded.name,
+    };
+  } catch (err) {
+    // Invalid token = continue without user (don't fail)
+  }
+  
+  next();
+}
+
+
 export function authRequired(req: AuthedRequest, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) {
