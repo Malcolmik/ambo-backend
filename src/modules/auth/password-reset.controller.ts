@@ -4,7 +4,7 @@ import { Request } from "express";
 import { success, fail } from "../../utils/response";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { sendPasswordResetEmail } from "../../services/email.service";
+import { sendPasswordResetEmail } from "../services/email.service";
 
 /**
  * POST /api/auth/forgot-password
