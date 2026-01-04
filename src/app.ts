@@ -8,6 +8,10 @@ import searchRoutes from "./modules/search/search.routes";
 import reviewRoutes from "./modules/reviews/reviews.routes";
 import fileRoutes from "./modules/files/files.routes";
 
+import settingsRoutes from "./modules/settings/settings.routes";
+import packagesRoutes from "./modules/packages/packages.routes";
+import servicesRoutes from "./modules/services/services.routes";
+
 import { rawBody } from "./middleware/rawBody";
 import { paystackWebhook } from "./modules/payments/payments.controller";
 
@@ -30,6 +34,9 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/files", fileRoutes);
+app.use("/api/settings", settingsRoutes);
+app.use("/api/packages", packagesRoutes);
+app.use("/api/services", servicesRoutes);
 
 // All API routes under /api
 app.use("/api", routes);
