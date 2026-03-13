@@ -5,18 +5,20 @@ import { prisma } from "../../config/prisma";
 import { AuthedRequest } from "../../middleware/auth";
 import { success, fail } from "../../utils/response";
 
-const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || "";
-const PAYSTACK_BASE_URL = "https://api.paystack.co";
+// --- XOROPAY CONFIGURATION ---
+const XOROPAY_SECRET_KEY = process.env.XOROPAY_SECRET_KEY || "";
+const XOROPAY_BASE_URL = "https://api.xoropay.com";
+const XOROPAY_PROCESSOR = process.env.XOROPAY_PROCESSOR || "kora";
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://ambo-ops-hub.lovable.app";
 
 // --- CURRENCY SETTINGS ---
-// Since the Paystack account is NGN-based, we convert USD to NGN.
+// Since the account is NGN-based, we convert USD to NGN.
 // Update this rate as needed.
 const EXCHANGE_RATE = 1680; 
 const FORCE_CURRENCY = "NGN";
 
-if (!PAYSTACK_SECRET_KEY) {
-  console.warn("[PAYSTACK] PAYSTACK_SECRET_KEY is not set in .env");
+if (!XOROPAY_SECRET_KEY) {
+  console.warn("[XOROPAY] XOROPAY_SECRET_KEY is not set in .env");
 }
 
 // --- CONFIGURATION: Service & Package Definitions ---
@@ -85,14 +87,16 @@ const PACKAGE_DEFINITIONS: Record<string, string[]> = {
   ]
 };
 
-// Helper: Convert Amount to Subunit (Kobo)
-function toSubunit(amount: number): number {
-  return Math.round(amount * 100);
-}
-
 /**
  * POST /api/payments/initialize
- * Initialize a Paystack payment for package selection OR custom services
+ * Initialize a Xoropay payment for package selection OR custom services
+ * 
+ * CHANGES FROM PAYSTACK:
+ * - Uses Xoropay endpoint (POST /api/v1/initiate instead of /transaction/initialize)
+ * - NO toSubunit() conversion - amounts are in actual currency units (NGN, not kobo)
+ * - Requires customer object with name field
+ * - Includes processor, notification_url, and narration fields
+ * - Response uses checkout_url instead of authorization_url
  */
 export async function initializePayment(req: AuthedRequest, res: Response) {
   try {
@@ -102,7 +106,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
 
     const { packageType, services = [] } = req.body;
 
-    console.log(`Init Payment: User=${req.user.email}, Package=${packageType}`);
+    console.log(`[Xoropay] Init Payment: User=${req.user.email}, Package=${packageType}`);
 
     // Validate package type
     const validPackages = ["AMBO CLASSIC", "AMBO DELUXE", "AMBO PREMIUM", "CUSTOM"];
@@ -146,7 +150,7 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
           if (!defaultServices.includes(service)) {
             const price = SERVICE_PRICES[service];
             if (price !== undefined) {
-              console.log(`Adding Add-on: ${service} ($${price})`);
+              console.log(`[Xoropay] Adding Add-on: ${service} ($${price})`);
               amountUSD += price;
             }
           }
@@ -164,18 +168,25 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
 
     // --- CONVERT TO NGN ---
     const amountNGN = amountUSD * EXCHANGE_RATE;
-    console.log(`Converting $${amountUSD} to ₦${amountNGN} (Rate: ${EXCHANGE_RATE})`);
+    console.log(`[Xoropay] Converting $${amountUSD} to ₦${amountNGN} (Rate: ${EXCHANGE_RATE})`);
 
     // Generate unique reference
     const reference = `AMBO-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-    // Prepare Paystack initialization data (IN NGN)
-    const paystackData = {
-      email: client.email,
-      amount: toSubunit(amountNGN), // Send NGN Kobo
-      currency: FORCE_CURRENCY,     // Force "NGN"
+    // Prepare Xoropay initialization data
+    // IMPORTANT: Xoropay amounts are in actual currency units, NOT subunits (kobo)
+    const xoropayData = {
+      customer: {
+        email: client.email,
+        name: client.companyName
+      },
+      amount: amountNGN,  // Actual currency units (₦), NOT kobo
+      currency: FORCE_CURRENCY,  // "NGN"
       reference: reference,
-      callback_url: `${FRONTEND_URL}/payment/callback`,
+      processor: XOROPAY_PROCESSOR,  // "kora", "pstk", or "fltw"
+      redirect_url: `${FRONTEND_URL}/payment/callback`,
+      notification_url: `${process.env.BACKEND_URL || "http://localhost:3000"}/api/payments/webhook`,
+      narration: `Payment for ${packageType} package`,
       metadata: {
         packageType: packageType,
         clientId: client.id,
@@ -186,13 +197,13 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
       },
     };
 
-    // Initialize payment with Paystack
+    // Initialize payment with Xoropay
     const resp = await axios.post(
-      `${PAYSTACK_BASE_URL}/transaction/initialize`,
-      paystackData,
+      `${XOROPAY_BASE_URL}/api/v1/initiate`,
+      xoropayData,
       {
         headers: {
-          Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+          Authorization: `Bearer ${XOROPAY_SECRET_KEY}`,
           "Content-Type": "application/json",
         },
       }
@@ -200,8 +211,8 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
 
     const data = resp.data;
 
-    if (!data.status) {
-      console.error("Paystack init failed:", data);
+    if (!data.success) {
+      console.error("[Xoropay] Init failed:", data);
       return fail(res, data.message || "Failed to initialize payment", 400);
     }
 
@@ -227,12 +238,13 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
         currency: FORCE_CURRENCY,
         reference: reference,
         status: "PENDING",
-        provider: "PAYSTACK",
+        provider: "XOROPAY",  // Changed from "PAYSTACK"
         meta: {
           packageType: packageType,
           clientId: client.id,
           userId: req.user.id,
-          originalAmountUSD: amountUSD
+          originalAmountUSD: amountUSD,
+          processor: XOROPAY_PROCESSOR
         },
       },
     });
@@ -249,24 +261,25 @@ export async function initializePayment(req: AuthedRequest, res: Response) {
             reference,
             amount: amountNGN,
             currency: FORCE_CURRENCY,
-            originalUSD: amountUSD
+            originalUSD: amountUSD,
+            provider: "XOROPAY"
           },
         },
       });
     } catch (auditErr) {
-      console.error("Audit log error:", auditErr);
+      console.error("[Xoropay] Audit log error:", auditErr);
     }
 
     return success(res, {
-      authorizationUrl: data.data.authorization_url,
-      accessCode: data.data.access_code,
+      authorizationUrl: data.data.checkout_url,  // Map checkout_url to authorizationUrl for frontend compatibility
       reference: data.data.reference,
+      processor: data.data.processor,
       contractId: contract.id,
     });
   } catch (err: any) {
-    const paystackError = err.response?.data;
-    console.error("initializePayment error:", JSON.stringify(paystackError || err.message));
-    return fail(res, paystackError?.message || "Payment initiation failed", 500);
+    const xoropayError = err.response?.data;
+    console.error("[Xoropay] initializePayment error:", JSON.stringify(xoropayError || err.message));
+    return fail(res, xoropayError?.message || "Payment initiation failed", 500);
   }
 }
 
@@ -284,6 +297,10 @@ export async function initiatePayment(req: AuthedRequest, res: Response) {
 
 /**
  * GET /api/payments/verify/:reference
+ * 
+ * NOTE: Xoropay verification can be done via webhook.
+ * This endpoint is kept for compatibility but may not be actively used
+ * with Xoropay's webhook-first model.
  */
 export async function verifyPayment(req: AuthedRequest, res: Response) {
   try {
@@ -292,15 +309,7 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
 
     if (!reference) return fail(res, "Reference required", 400);
 
-    const resp = await axios.get(
-      `${PAYSTACK_BASE_URL}/transaction/verify/${reference}`,
-      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` } }
-    );
-
-    const data = resp.data;
-    if (!data.status) return fail(res, data.message || "Verification failed", 400);
-
-    const txData = data.data;
+    // Check payment status from database (populated by webhook)
     const payment = await prisma.payment.findUnique({
       where: { reference },
       include: { contract: { include: { client: { include: { linkedUser: true } } } }, user: true },
@@ -308,150 +317,160 @@ export async function verifyPayment(req: AuthedRequest, res: Response) {
 
     if (!payment) return fail(res, "Payment not found", 404);
 
-    if (txData.status === "success" && payment.status !== "PAID") {
-      await prisma.$transaction(async (tx) => {
-        await tx.payment.update({
-          where: { reference },
-          data: {
-            status: "PAID",
-            paidAt: txData.paid_at ? new Date(txData.paid_at) : new Date(),
-            channel: txData.channel,
-            rawPayload: txData,
-          },
-        });
-
-        if (payment.contract) {
-          await tx.contract.update({
-            where: { id: payment.contract.id },
-            data: { paymentStatus: "PAID", status: "AWAITING_QUESTIONNAIRE" },
-          });
-        }
-
-        if (payment.user && payment.user.role === "CLIENT_VIEWER_PENDING") {
-          await tx.user.update({ where: { id: payment.user.id }, data: { role: "CLIENT_VIEWER" } });
-        }
-        
-        const client = payment.contract?.client;
-        if (client && client.linkedUser && client.linkedUser.role === "CLIENT_VIEWER_PENDING") {
-          await tx.user.update({ where: { id: client.linkedUser.id }, data: { role: "CLIENT_VIEWER" } });
-        }
-      });
-    } else {
-        // Update status if failed/abandoned
-        await prisma.payment.update({
-            where: { reference },
-            data: { status: txData.status === "success" ? "PAID" : "FAILED" }
-        });
-    }
-
+    // Return current payment status from database
     return success(res, {
-      status: txData.status,
-      amount: txData.amount / 100, 
-      reference: txData.reference,
+      status: payment.status === "PAID" ? "success" : payment.status === "FAILED" ? "failed" : "pending",
+      amount: payment.amount,
+      reference: payment.reference,
+      provider: "XOROPAY"
     });
   } catch (err: any) {
-    console.error("verifyPayment error:", err.response?.data || err.message);
+    console.error("[Xoropay] verifyPayment error:", err.message);
     return fail(res, "Failed to verify payment", 500);
   }
 }
 
 /**
  * POST /api/payments/webhook
+ * 
+ * CHANGES FROM PAYSTACK:
+ * - Signature header changed from x-paystack-signature to x-xoropay-signature
+ * - Hash algorithm changed from SHA-512 to SHA-256
+ * - Uses XOROPAY_SECRET_KEY for webhook signature verification
+ * - Event name changed from "charge.success" to "payment.successful"
+ * - Also handles "payment.failed" event
+ * - 30-second timeout with up to 5 exponential backoff retries (Xoropay handles this)
  */
 export async function paystackWebhook(req: Request, res: Response) {
   try {
     let event = req.body;
     let rawBody = req.body;
 
+    // Handle raw body for signature verification
     if (Buffer.isBuffer(req.body)) {
       try {
+        rawBody = req.body; 
         const bodyString = req.body.toString('utf8');
         event = JSON.parse(bodyString);
-        rawBody = req.body; 
       } catch (e) {
-        console.error("Webhook Buffer parse error:", e);
+        console.error("[Xoropay] Webhook Buffer parse error:", e);
       }
     } else if (typeof req.body === 'object') {
-        rawBody = JSON.stringify(req.body);
+      rawBody = JSON.stringify(req.body);
     }
 
     const reference = event?.data?.reference || event?.reference;
-    if (!reference) return res.status(400).send("No reference found");
-
-    const hash = crypto.createHmac("sha512", PAYSTACK_SECRET_KEY).update(rawBody).digest("hex");
-    const signature = req.headers["x-paystack-signature"];
-    let isAuthentic = hash === signature;
-
-    if (!isAuthentic) {
-      console.warn(`Signature mismatch for ${reference}. Checking API...`);
-      try {
-        const verifyResponse = await axios.get(
-          `${PAYSTACK_BASE_URL}/transaction/verify/${reference}`,
-          { headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` } }
-        );
-        if (verifyResponse.data.status && verifyResponse.data.data.status === "success") {
-          isAuthentic = true;
-          if (!event.data) event.data = verifyResponse.data.data;
-          if (!event.event) event.event = "charge.success";
-        }
-      } catch (e) { console.error("Webhook fallback failed"); }
+    if (!reference) {
+      console.warn("[Xoropay] Webhook received without reference");
+      return res.status(400).send("No reference found");
     }
 
-    if (!isAuthentic) return res.status(401).send("Invalid signature");
+    // --- SIGNATURE VERIFICATION (Xoropay) ---
+    // Xoropay uses HMAC SHA-256 with x-xoropay-signature header
+    const signature = req.headers["x-xoropay-signature"] as string;
+    
+    if (!signature) {
+      console.warn(`[Xoropay] Missing x-xoropay-signature header for ${reference}`);
+      return res.status(401).send("Invalid signature");
+    }
 
-    if (event.event === "charge.success") {
+    const expectedSignature = crypto
+      .createHmac("sha256", XOROPAY_SECRET_KEY)
+      .update(rawBody)
+      .digest("hex");
+
+    // Use timing-safe comparison to prevent timing attacks
+    let isAuthentic = false;
+    try {
+      isAuthentic = crypto.timingSafeEqual(
+        Buffer.from(expectedSignature),
+        Buffer.from(signature)
+      );
+    } catch (e) {
+      // Buffers are not equal length or other comparison error
+      isAuthentic = false;
+    }
+
+    if (!isAuthentic) {
+      console.warn(`[Xoropay] Signature mismatch for ${reference}. Expected: ${expectedSignature}, Got: ${signature}`);
+      return res.status(401).send("Invalid signature");
+    }
+
+    // --- HANDLE PAYMENT.SUCCESSFUL EVENT ---
+    if (event.event === "payment.successful") {
+      console.log(`[Xoropay] Processing payment.successful for ${reference}`);
+      
       const data = event.data || {}; 
       const payment = await prisma.payment.findUnique({
         where: { reference },
         include: { contract: { include: { client: { include: { linkedUser: true } } } }, user: true },
       });
 
-      if (!payment) return res.status(404).send("Payment not found");
-      if (payment.status === "PAID") return res.status(200).send("Already processed");
+      if (!payment) {
+        console.warn(`[Xoropay] Payment not found: ${reference}`);
+        return res.status(404).send("Payment not found");
+      }
+
+      if (payment.status === "PAID") {
+        console.log(`[Xoropay] Payment already processed: ${reference}`);
+        return res.status(200).send("Already processed");
+      }
+
+      // Verify amount matches
+      if (payment.amount !== data.amount) {
+        console.warn(`[Xoropay] Amount mismatch for ${reference}. Expected: ${payment.amount}, Got: ${data.amount}`);
+        return res.status(400).send("Amount mismatch");
+      }
 
       await prisma.$transaction(async (tx) => {
+        // Update payment status
         await tx.payment.update({
           where: { reference },
           data: {
             status: "PAID",
-            paidAt: new Date(data.paid_at || new Date()),
-            channel: data.channel,
+            paidAt: data.completed_at ? new Date(data.completed_at) : new Date(),
+            channel: data.processor,  // Store processor name
             rawPayload: data,
           },
         });
 
         let contractClient = payment.contract?.client;
+        
+        // Update contract status
         if (payment.contract) {
           await tx.contract.update({
             where: { id: payment.contract.id },
             data: { paymentStatus: "PAID", status: "AWAITING_QUESTIONNAIRE" },
           });
         } else {
-            // Fallback contract linking logic
-            const meta: any = data.metadata || payment.meta || {};
-            if (meta.clientId && meta.packageType) {
-                const services = SERVICE_PRICES[meta.packageType] ? [] : (meta.services || []);
-                const newContract = await tx.contract.create({
-                    data: {
-                        clientId: meta.clientId,
-                        packageType: meta.packageType,
-                        services, 
-                        totalPrice: data.amount ? data.amount / 100 : 0,
-                        currency: "NGN",
-                        paymentStatus: "PAID",
-                        status: "AWAITING_QUESTIONNAIRE",
-                        paymentRef: reference,
-                    },
-                    include: { client: { include: { linkedUser: true } } }
-                });
-                contractClient = newContract.client;
-                await tx.payment.update({ where: { id: payment.id }, data: { contractId: newContract.id } });
-            }
+          // Fallback contract linking logic
+          const meta: any = data.metadata || payment.meta || {};
+          if (meta.clientId && meta.packageType) {
+            const services = meta.services || [];
+            const newContract = await tx.contract.create({
+              data: {
+                clientId: meta.clientId,
+                packageType: meta.packageType,
+                services, 
+                totalPrice: data.amount,
+                currency: data.currency || "NGN",
+                paymentStatus: "PAID",
+                status: "AWAITING_QUESTIONNAIRE",
+                paymentRef: reference,
+              },
+              include: { client: { include: { linkedUser: true } } }
+            });
+            contractClient = newContract.client;
+            await tx.payment.update({ where: { id: payment.id }, data: { contractId: newContract.id } });
+          }
         }
 
+        // Promote user if pending
         if (payment.user && payment.user.role === "CLIENT_VIEWER_PENDING") {
           await tx.user.update({ where: { id: payment.user.id }, data: { role: "CLIENT_VIEWER" } });
         }
+
+        // Promote linked user if pending
         if (contractClient && contractClient.linkedUser && contractClient.linkedUser.role === "CLIENT_VIEWER_PENDING") {
           await tx.user.update({ where: { id: contractClient.linkedUser.id }, data: { role: "CLIENT_VIEWER" } });
           
@@ -462,17 +481,50 @@ export async function paystackWebhook(req: Request, res: Response) {
                 actionType: "USER_AUTO_APPROVED_BY_PAYMENT",
                 entityType: "USER",
                 entityId: contractClient.linkedUser.id,
-                metaJson: { paymentRef: reference, action: "Auto-promote" },
+                metaJson: { paymentRef: reference, provider: "XOROPAY", action: "Auto-promote" },
               },
             });
-          } catch(e) {}
+          } catch(e) {
+            console.error("[Xoropay] Audit log error for promotion:", e);
+          }
         }
       });
+
+      console.log(`[Xoropay] Payment ${reference} completed successfully`);
+      return res.status(200).send("Webhook received");
     }
 
-    return res.status(200).send("Webhook received");
+    // --- HANDLE PAYMENT.FAILED EVENT ---
+    if (event.event === "payment.failed") {
+      console.log(`[Xoropay] Processing payment.failed for ${reference}`);
+      
+      const payment = await prisma.payment.findUnique({
+        where: { reference }
+      });
+
+      if (!payment) {
+        console.warn(`[Xoropay] Failed payment not found: ${reference}`);
+        return res.status(404).send("Payment not found");
+      }
+
+      await prisma.payment.update({
+        where: { reference },
+        data: {
+          status: "FAILED",
+          rawPayload: event.data || {}
+        }
+      });
+
+      console.log(`[Xoropay] Payment ${reference} marked as failed`);
+      return res.status(200).send("Webhook received");
+    }
+
+    // Unknown event
+    console.log(`[Xoropay] Unknown event received: ${event.event}`);
+    return res.status(200).send("Event received");
+
   } catch (err: any) {
-    console.error("Webhook processing error:", err);
+    console.error("[Xoropay] Webhook processing error:", err);
     return res.status(500).send("Webhook processing failed");
   }
 }
